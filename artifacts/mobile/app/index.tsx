@@ -119,6 +119,11 @@ export default function VoiceScreen() {
       handleOpenApp(transcript, command.app);
     } else if (command.type === 'CALL_CONTACT') {
       handleCallContact(transcript, command.contactName);
+    } else {
+      // SEND_SMS and any future types — fall back gracefully so the app
+      // doesn't silently get stuck in 'result' state.
+      setActivePanel('none');
+      speak(`I heard: ${transcript}`);
     }
   }, [voiceState, transcript]);
 

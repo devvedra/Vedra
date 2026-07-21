@@ -112,9 +112,15 @@ export function useSpeechRecognition(): SpeechRecognitionResult {
       }
     };
 
-    // Cleanup listeners when component unmounts
+    // Cleanup: null out callbacks immediately so no stale setState fires
+    // during the async destroy window.
     return () => {
-      Voice.destroy().then(() => Voice?.removeAllListeners());
+      Voice.onSpeechStart = () => {};
+      Voice.onSpeechEnd = () => {};
+      Voice.onSpeechResults = () => {};
+      Voice.onSpeechPartialResults = () => {};
+      Voice.onSpeechError = () => {};
+      Voice.destroy().catch(() => {});
     };
   }, []);
 
