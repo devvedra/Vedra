@@ -1,13 +1,16 @@
 /**
- * commandParser.ts — Vedra Command Parser (v0.6)
+ * commandParser.ts — Vedra Command Parser (v0.8)
  *
  * Parses free-form voice transcripts into typed commands, entirely offline
  * using string matching. No network calls, no AI services.
  *
+ * v0.8 additions: MEMORY_STORE_NAME, MEMORY_QUERY_NAME, SMALL_TALK,
+ *                 STUDY_TIMER, STUDY_REMINDERS, STUDY_CHECKLIST, UNKNOWN
+ *
  * ── Supported command types ─────────────────────────────────────────────────
  *
- *  OPEN_APP        — "Open WhatsApp", "Launch Chrome"…
- *  CALL_CONTACT    — "Call Mom", "Dial Rahul"…
+ *  OPEN_APP        — "Open WhatsApp", "Launch Chrome", "I want to use…"
+ *  CALL_CONTACT    — "Call Mom", "Dial Rahul", "I need to call…"
  *  SEND_SMS        — "Text Mom saying I'll be late"…
  *  SET_ALARM       — "Set alarm for 6 AM", "Wake me at 5:30"…
  *  CANCEL_ALARM    — "Cancel my alarm", "Delete 6 AM alarm"…
@@ -39,6 +42,13 @@
  *  WIFI_OFF        — "Turn off Wi-Fi"…
  *  BLUETOOTH_ON    — "Turn on Bluetooth"…
  *  BLUETOOTH_OFF   — "Turn off Bluetooth"…
+ *  MEMORY_STORE_NAME — "My name is Rahul", "Call me Dev"…
+ *  MEMORY_QUERY_NAME — "What's my name?", "Do you know my name?"…
+ *  SMALL_TALK      — "Hello", "How are you?", "What can you do?"…
+ *  STUDY_TIMER     — "Start a 25-minute study timer", "Pomodoro"…
+ *  STUDY_REMINDERS — "Show today's study reminders"…
+ *  STUDY_CHECKLIST — "Generate my study checklist"…
+ *  UNKNOWN         — Anything not matched (returns helpful fallback)
  */
 
 import { parseAbsoluteTime, parseDuration } from './timeParser';
@@ -100,7 +110,18 @@ export type ParsedCommand =
   | { type: 'WIFI_ON' }
   | { type: 'WIFI_OFF' }
   | { type: 'BLUETOOTH_ON' }
-  | { type: 'BLUETOOTH_OFF' };
+  | { type: 'BLUETOOTH_OFF' }
+  // ── v0.8: Memory ───────────────────────────────────────────────────────────
+  | { type: 'MEMORY_STORE_NAME'; name: string }
+  | { type: 'MEMORY_QUERY_NAME' }
+  // ── v0.8: Small Talk ───────────────────────────────────────────────────────
+  | { type: 'SMALL_TALK'; input: string }
+  // ── v0.8: Study Assistant ──────────────────────────────────────────────────
+  | { type: 'STUDY_TIMER';     minutes: number; durationDisplay: string }
+  | { type: 'STUDY_REMINDERS' }
+  | { type: 'STUDY_CHECKLIST' }
+  // ── v0.8: Unknown (graceful fallback) ──────────────────────────────────────
+  | { type: 'UNKNOWN'; input: string };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // App Registry
@@ -126,7 +147,11 @@ const APP_REGISTRY: AppDefinition[] = [
   { displayName: 'Clock',         keywords: ['clock', 'alarm clock'],                          packageOptions: ['com.google.android.deskclock', 'com.sec.android.app.clockpackage'] },
   { displayName: 'Contacts',      keywords: ['contacts', 'address book', 'phone book'],        packageOptions: ['com.google.android.contacts', 'com.samsung.android.contacts'] },
   { displayName: 'Play Store',    keywords: ['play store', 'google play', 'app store'],        packageName: 'com.android.vending' },
+  { displayName: 'Notes',         keywords: ['notes', 'note', 'google keep', 'keep', 'notepad', 'sticky notes'], packageOptions: ['com.google.android.keep', 'com.samsung.android.app.notes', 'com.miui.notes'] },
 ];
+
+// Public re-export for intentEngine.ts (avoids circular import)
+export { APP_REGISTRY as APP_REGISTRY_PUBLIC };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Verb / keyword lists
@@ -182,6 +207,13 @@ export function parseCommand(text: string): ParsedCommand | null {
   const cleaned = normalise(text);
 
   return (
+    // ── v0.8: Memory & Study first (specific patterns, avoid false matches) ──
+    tryMemoryStoreName(cleaned) ??
+    tryMemoryQueryName(cleaned) ??
+    tryStudyTimer(cleaned)      ??
+    tryStudyReminders(cleaned)  ??
+    tryStudyChecklist(cleaned)  ??
+    // ── Core device commands ─────────────────────────────────────────────────
     tryOpenApp(cleaned)        ??
     tryCallContact(cleaned)    ??
     trySendSms(cleaned)        ??
@@ -198,7 +230,7 @@ export function parseCommand(text: string): ParsedCommand | null {
     tryCreateEvent(cleaned)    ??
     tryListEvents(cleaned)     ??
     tryDeleteEvent(cleaned)    ??
-    // ── v0.6 device controls (checked after all existing commands) ──
+    // ── v0.6 device controls ────────────────────────────────────────────────
     tryFlashlightOn(cleaned)   ??
     tryFlashlightOff(cleaned)  ??
     tryVolumeUp(cleaned)       ??
@@ -216,6 +248,12 @@ export function parseCommand(text: string): ParsedCommand | null {
     tryWifiOff(cleaned)        ??
     tryBluetoothOn(cleaned)    ??
     tryBluetoothOff(cleaned)   ??
+    // ── v0.8: NLP-extended verbs ─────────────────────────────────────────────
+    tryOpenAppExtra(cleaned)   ??
+    tryCallExtra(cleaned)      ??
+    trySmsSendExtra(cleaned)   ??
+    // ── v0.8: Small talk (checked last — catch-all before UNKNOWN) ───────────
+    trySmallTalk(cleaned, text) ??
     null
   );
 }
@@ -512,6 +550,154 @@ function tryWifiOn(c: string):      ParsedCommand | null { return WIFI_ON_KW.som
 function tryWifiOff(c: string):     ParsedCommand | null { return WIFI_OFF_KW.some(kw => c.includes(kw)) ? { type: 'WIFI_OFF'      } : null; }
 function tryBluetoothOn(c: string): ParsedCommand | null { return BT_ON_KW.some(kw    => c.includes(kw)) ? { type: 'BLUETOOTH_ON'  } : null; }
 function tryBluetoothOff(c: string):ParsedCommand | null { return BT_OFF_KW.some(kw   => c.includes(kw)) ? { type: 'BLUETOOTH_OFF' } : null; }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.8 parse passes — Memory
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// "My name is Rahul" / "Call me Dev" / "You can call me Priya"
+const NAME_STORE_PAT = /^(?:my name is|call me|people call me|you can call me|i(?:'m| am)(?: called)?)\s+(\w+)$/;
+
+function tryMemoryStoreName(c: string): ParsedCommand | null {
+  const m = c.match(NAME_STORE_PAT);
+  if (!m) return null;
+  const name = m[1].trim();
+  if (name.length < 2 || ['the', 'a', 'an', 'and'].includes(name)) return null;
+  return { type: 'MEMORY_STORE_NAME', name: name.charAt(0).toUpperCase() + name.slice(1) };
+}
+
+// "What's my name?" / "Do you know my name?" / "My name?"
+const NAME_QUERY_KW = ["what's my name", 'whats my name', 'what is my name', 'do you know my name', 'do you remember my name', 'tell me my name', 'my name?'];
+
+function tryMemoryQueryName(c: string): ParsedCommand | null {
+  return NAME_QUERY_KW.some(kw => c.includes(kw)) ? { type: 'MEMORY_QUERY_NAME' } : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.8 parse passes — Study Assistant
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// "Start a 25-minute study timer" / "Pomodoro" / "Focus for 30 minutes"
+//
+// Rules (enforced strictly to avoid misclassifying list/show commands):
+//  A) Text contains an explicit <number> + (min|minute) near a study/focus keyword → use that number
+//  B) Text explicitly starts/begins a pomodoro with NO number → default 25 min (Pomodoro standard)
+//  In all other cases → return null (do not guess)
+//
+// Negative gate: never match if the command starts with list/show/display/what/get words
+const STUDY_TIMER_SKIP = /^(show|list|display|what|get|check|tell me|how many)/;
+
+// Pattern A: "<number> minute study/focus timer" or "study/focus for <number> minutes"
+const STUDY_TIMER_WITH_NUM = /(\d+)[- ]?(?:minute|min)s?\s+(?:study|focus|work|pomodoro)\s*(?:timer|session)?|(?:study|focus|work|pomodoro)\s+(?:timer\s+)?(?:for\s+)?(\d+)\s+(?:minute|min)s?/;
+
+// Pattern B: explicit start-verb + "pomodoro" with optional number
+const STUDY_POMODORO_START = /^(?:start|begin|set|kick off|do)\s+(?:a\s+)?(?:pomodoro|focus session|study session|work session)(?:\s+(?:for\s+)?(\d+)\s+(?:minute|min)s?)?$/;
+
+function tryStudyTimer(c: string): ParsedCommand | null {
+  // Hard skip for list/show/query commands — they belong to STUDY_REMINDERS / STUDY_CHECKLIST
+  if (STUDY_TIMER_SKIP.test(c)) return null;
+
+  // Pattern A: explicit number present
+  const mA = c.match(STUDY_TIMER_WITH_NUM);
+  if (mA) {
+    const minutesRaw = mA[1] ?? mA[2];
+    if (!minutesRaw) return null;
+    const minutes = Math.max(1, Math.min(180, parseInt(minutesRaw, 10)));
+    return { type: 'STUDY_TIMER', minutes, durationDisplay: `${minutes} minute` };
+  }
+
+  // Pattern B: "start a pomodoro" — default 25 min only if a start verb is present
+  const mB = c.match(STUDY_POMODORO_START);
+  if (mB) {
+    const minutes = mB[1] ? Math.max(1, Math.min(180, parseInt(mB[1], 10))) : 25;
+    return { type: 'STUDY_TIMER', minutes, durationDisplay: `${minutes} minute` };
+  }
+
+  return null;
+}
+
+const STUDY_REMINDER_KW = ["today's study reminders", 'my study reminders', 'show study reminders', 'study reminders', 'study schedule', 'study plan today'];
+
+function tryStudyReminders(c: string): ParsedCommand | null {
+  return STUDY_REMINDER_KW.some(kw => c.includes(kw)) ? { type: 'STUDY_REMINDERS' } : null;
+}
+
+const STUDY_CHECKLIST_KW = ['study checklist', 'generate checklist', 'my checklist', 'show checklist', 'learning checklist', 'what should i study', 'what do i need to study', 'what should i revise'];
+
+function tryStudyChecklist(c: string): ParsedCommand | null {
+  return STUDY_CHECKLIST_KW.some(kw => c.includes(kw)) ? { type: 'STUDY_CHECKLIST' } : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.8 parse passes — Small Talk
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const SMALL_TALK_TRIGGERS = [
+  'hello', 'hi vedra', 'hey vedra', 'hi there', 'hey there',
+  'how are you', "what's up", 'whats up', 'good morning', 'good evening',
+  'good afternoon', 'good night', 'who are you', 'what can you do',
+  'what do you do', 'help me', 'thanks', 'thank you', 'are you there',
+  'are you listening', 'are you awake',
+];
+
+// Single-word greetings
+const SMALL_TALK_WORDS = /^(hello|hi|hey|thanks|help)$/;
+
+function trySmallTalk(c: string, raw: string): ParsedCommand | null {
+  if (SMALL_TALK_WORDS.test(c)) return { type: 'SMALL_TALK', input: raw };
+  if (SMALL_TALK_TRIGGERS.some(t => c.includes(t))) return { type: 'SMALL_TALK', input: raw };
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.8 Extended open/call verb lists for NLP breadth
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Extend OPEN_VERBS with more natural phrasings (append-only, doesn't break v0.6)
+const OPEN_EXTRA_VERBS = ['pull up', 'fire up', 'open up', 'switch to', 'jump to', 'get me', 'bring me', 'take me to', 'navigate to'];
+for (const v of OPEN_EXTRA_VERBS) {
+  if (!OPEN_VERBS.includes(v)) OPEN_VERBS.push(v);
+}
+
+// Extend CALL_VERBS
+const CALL_EXTRA_VERBS = ['connect me to', 'connect me with', 'reach', 'get me', 'talk to', 'speak to', 'speak with', 'chat with'];
+for (const v of CALL_EXTRA_VERBS) {
+  if (!CALL_VERBS.includes(v)) CALL_VERBS.push(v);
+}
+
+// "I want to (open|use|launch) X" — fuzzy OPEN_APP
+const WANT_OPEN_PAT = /^i (?:want|need|have) to (?:use|open|access|check|launch|start|view)\s+(.+)$/;
+
+// "I want to use X" — fuzzy OPEN_APP
+function tryOpenAppExtra(c: string): ParsedCommand | null {
+  const m = c.match(WANT_OPEN_PAT);
+  if (!m) return null;
+  const app = findApp(m[1].trim().replace(FILLER_WORDS, '').trim());
+  if (app) return { type: 'OPEN_APP', app };
+  return null;
+}
+
+// "I want to call / need to call / have to call X"
+const WANT_CALL_PAT = /^i (?:want|need|have|got) to (?:call|phone|ring|reach|dial)\s+(.+)$/;
+
+function tryCallExtra(c: string): ParsedCommand | null {
+  const m = c.match(WANT_CALL_PAT);
+  if (!m) return null;
+  const name = m[1].trim().replace(FILLER_WORDS, '').trim();
+  if (name.length >= 2) return { type: 'CALL_CONTACT', contactName: name };
+  return null;
+}
+
+// "I want to text / message X"
+const WANT_SMS_PAT = /^i (?:want|need) to (?:text|message|sms|msg)\s+(.+)$/;
+
+function trySmsSendExtra(c: string): ParsedCommand | null {
+  const m = c.match(WANT_SMS_PAT);
+  if (!m) return null;
+  const rest = m[1].trim().replace(FILLER_WORDS, '').trim();
+  if (rest.length < 2) return null;
+  return { type: 'SEND_SMS', contactName: rest };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helpers

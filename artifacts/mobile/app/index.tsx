@@ -1,9 +1,14 @@
 /**
- * Vedra — Voice Screen (v0.6)
+ * Vedra — Voice Screen (v0.8)
  *
- * Extends v0.5 with: Flashlight, Volume, Brightness, Battery, Wi-Fi, Bluetooth.
- *
- * All features work 100% offline using Android's official APIs.
+ * New in v0.8:
+ *  - Intent recognition: NLP engine handles varied phrasings
+ *  - Local memory: remembers user name, frequent contacts/apps
+ *  - Conversation context: pronoun resolution ("him" → Rahul)
+ *  - Study assistant: study timers, reminders, checklist
+ *  - Small talk: friendly responses to greetings/questions
+ *  - Unknown command: graceful fallback with suggestions
+ *  - Intent/memory/study UI panels
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -46,6 +51,18 @@ import { volumeUp, volumeDown, setVolumeTo, muteVolume, maxVolume } from '@/util
 import { brightnessUp, brightnessDown, setBrightnessTo, setBrightnessMin, setBrightnessMax } from '@/utils/brightnessManager';
 import { getBatteryInfo } from '@/utils/batteryManager';
 import { wifiOn, wifiOff, bluetoothOn, bluetoothOff } from '@/utils/connectivityManager';
+// ── v0.8 New modules ──────────────────────────────────────────────────────────
+import {
+  setUserName, getUserName,
+  recordContactUsage, recordAppUsage, recordCommand,
+} from '@/utils/memoryManager';
+import {
+  updateContact, updateApp, addTurn, resolvePronouns,
+} from '@/utils/conversationContext';
+import { getSmallTalkResponse, getUnknownResponse } from '@/utils/smallTalkManager';
+import {
+  getTodayStudyReminders, buildStudyChecklist, toggleChecklistItem,
+} from '@/utils/studyAssistant';
 
 // ── Components ────────────────────────────────────────────────────────────────
 import MicButton from '@/components/MicButton';
@@ -61,6 +78,10 @@ import StopwatchDisplay from '@/components/StopwatchDisplay';
 import ReminderFeedback, { type ReminderFeedbackState } from '@/components/ReminderFeedback';
 import CalendarFeedback, { type CalendarFeedbackState } from '@/components/CalendarFeedback';
 import DeviceControlFeedback, { type DeviceControlState } from '@/components/DeviceControlFeedback';
+// ── v0.8 New components ───────────────────────────────────────────────────────
+import MemoryFeedback, { type MemoryFeedbackState } from '@/components/MemoryFeedback';
+import SmallTalkFeedback, { type SmallTalkState } from '@/components/SmallTalkFeedback';
+import StudyFeedback, { type StudyFeedbackState } from '@/components/StudyFeedback';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -75,7 +96,10 @@ type ActivePanel =
   | 'timer_result'
   | 'reminder'
   | 'calendar'
-  | 'device';
+  | 'device'
+  | 'memory'
+  | 'small_talk'
+  | 'study';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Component
@@ -106,6 +130,12 @@ export default function VoiceScreen() {
 
   const stopwatch = useStopwatch();
 
+  // ── v0.8: User's preferred name (loaded once) ──────────────────────────────
+  const [preferredName, setPreferredName] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    getUserName().then(n => setPreferredName(n)).catch(() => {});
+  }, []);
+
   // ── Feedback panels ────────────────────────────────────────────────────────
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
   const [appFeedback,     setAppFeedback]     = useState<FeedbackState>({ phase: 'none' });
@@ -115,6 +145,10 @@ export default function VoiceScreen() {
   const [reminderFeedback,setReminderFeedback]= useState<ReminderFeedbackState>({ phase: 'none' });
   const [calendarFeedback,setCalendarFeedback]= useState<CalendarFeedbackState>({ phase: 'none' });
   const [deviceFeedback,  setDeviceFeedback]  = useState<DeviceControlState>({ phase: 'none' });
+  // ── v0.8 panels ────────────────────────────────────────────────────────────
+  const [memoryFeedback,    setMemoryFeedback]   = useState<MemoryFeedbackState>({ phase: 'none' });
+  const [smallTalkFeedback, setSmallTalkFeedback]= useState<SmallTalkState>({ phase: 'none' });
+  const [studyFeedback,     setStudyFeedback]    = useState<StudyFeedbackState>({ phase: 'none' });
 
   // Prevent double-processing in React strict-mode
   const lastProcessed = useRef<string>('');
@@ -125,6 +159,25 @@ export default function VoiceScreen() {
     contact: ContactMatch;
     transcript: string;
   } | null>(null);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Helper: clear all panels (called on mic reset)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  function clearAllPanels() {
+    setActivePanel('none');
+    setAppFeedback({ phase: 'none' });
+    setCallFeedback({ phase: 'none' });
+    setSmsFeedback({ phase: 'none' });
+    setAlarmFeedback({ phase: 'none' });
+    setReminderFeedback({ phase: 'none' });
+    setCalendarFeedback({ phase: 'none' });
+    setDeviceFeedback({ phase: 'none' });
+    setMemoryFeedback({ phase: 'none' });
+    setSmallTalkFeedback({ phase: 'none' });
+    setStudyFeedback({ phase: 'none' });
+    pendingSmsRef.current = null;
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Core: process voice result
@@ -143,49 +196,80 @@ export default function VoiceScreen() {
       return;
     }
 
-    const command = parseCommand(transcript);
+    // ── v0.8: Pronoun resolution via conversation context ──────────────────
+    const { resolved, didResolve } = resolvePronouns(transcript);
+    const resolvedTranscript = resolved;
+
+    const command = parseCommand(resolvedTranscript);
+
+    // Record command for memory
+    if (command) {
+      recordCommand(resolvedTranscript, command.type).catch(() => {});
+    }
 
     if (!command) {
-      setActivePanel('none');
-      speak(`I heard: ${transcript}`);
+      // Genuine unknown — give a helpful response
+      const suggestion = getUnknownResponse(resolvedTranscript);
+      setActivePanel('small_talk');
+      setSmallTalkFeedback({ phase: 'unknown', transcript: resolvedTranscript, suggestion });
+      speak(suggestion);
+      addTurn(resolvedTranscript, 'UNKNOWN', suggestion);
       return;
     }
 
     switch (command.type) {
-      case 'OPEN_APP':     handleOpenApp(transcript, command.app);                         break;
-      case 'CALL_CONTACT': handleCallContact(transcript, command.contactName);             break;
-      case 'SEND_SMS':     handleSendSms(transcript, command.contactName, command.message);break;
-      case 'SET_ALARM':    handleSetAlarm(command.hour, command.minute, command.timeDisplay);break;
-      case 'CANCEL_ALARM': handleCancelAlarm(command.timeDisplay);                         break;
-      case 'LIST_ALARMS':  handleListAlarms();                                             break;
-      case 'START_TIMER':  handleStartTimer(command.totalMs, command.durationDisplay);     break;
-      case 'CANCEL_TIMER': handleCancelTimerCmd();                                         break;
-      case 'QUERY_TIMER':  handleQueryTimer();                                             break;
-      case 'STOPWATCH':    handleStopwatch(command.action);                                break;
+      case 'OPEN_APP':     handleOpenApp(resolvedTranscript, command.app);                         break;
+      case 'CALL_CONTACT': handleCallContact(resolvedTranscript, command.contactName);             break;
+      case 'SEND_SMS':     handleSendSms(resolvedTranscript, command.contactName, command.message);break;
+      case 'SET_ALARM':    handleSetAlarm(command.hour, command.minute, command.timeDisplay);       break;
+      case 'CANCEL_ALARM': handleCancelAlarm(command.timeDisplay);                                  break;
+      case 'LIST_ALARMS':  handleListAlarms();                                                      break;
+      case 'START_TIMER':  handleStartTimer(command.totalMs, command.durationDisplay);              break;
+      case 'CANCEL_TIMER': handleCancelTimerCmd();                                                  break;
+      case 'QUERY_TIMER':  handleQueryTimer();                                                      break;
+      case 'STOPWATCH':    handleStopwatch(command.action);                                         break;
       case 'SET_REMINDER': handleSetReminder(command.message, command.timeDisplay, command.triggerMs); break;
-      case 'LIST_REMINDERS': handleListReminders();                                        break;
-      case 'DELETE_REMINDER': handleDeleteReminder();                                      break;
+      case 'LIST_REMINDERS': handleListReminders();                                                 break;
+      case 'DELETE_REMINDER': handleDeleteReminder();                                               break;
       case 'CREATE_EVENT':    handleCreateEvent(command.title, command.timeDisplay, command.startMs, command.endMs); break;
       case 'LIST_EVENTS':     handleListEvents();                                                   break;
-      case 'DELETE_EVENT':    handleDeleteEvent();                                                   break;
+      case 'DELETE_EVENT':    handleDeleteEvent();                                                  break;
       // ── v0.6 Device Controls ──────────────────────────────────────────────
-      case 'FLASHLIGHT_ON':   handleFlashlight(transcript, true);                                   break;
-      case 'FLASHLIGHT_OFF':  handleFlashlight(transcript, false);                                  break;
-      case 'VOLUME_UP':       handleVolumeChange(transcript, 'up');                                 break;
-      case 'VOLUME_DOWN':     handleVolumeChange(transcript, 'down');                               break;
-      case 'VOLUME_SET':      handleVolumeChange(transcript, 'set', command.percent);               break;
-      case 'VOLUME_MUTE':     handleVolumeChange(transcript, 'mute');                               break;
-      case 'VOLUME_MAX':      handleVolumeChange(transcript, 'max');                                break;
-      case 'BRIGHTNESS_UP':   handleBrightnessChange(transcript, 'up');                             break;
-      case 'BRIGHTNESS_DOWN': handleBrightnessChange(transcript, 'down');                           break;
-      case 'BRIGHTNESS_SET':  handleBrightnessChange(transcript, 'set', command.percent);           break;
-      case 'BRIGHTNESS_MIN':  handleBrightnessChange(transcript, 'min');                            break;
-      case 'BRIGHTNESS_MAX':  handleBrightnessChange(transcript, 'max');                            break;
-      case 'BATTERY_STATUS':  handleBattery(transcript);                                            break;
-      case 'WIFI_ON':         handleConnectivity(transcript, 'wifi_on');                            break;
-      case 'WIFI_OFF':        handleConnectivity(transcript, 'wifi_off');                           break;
-      case 'BLUETOOTH_ON':    handleConnectivity(transcript, 'bt_on');                              break;
-      case 'BLUETOOTH_OFF':   handleConnectivity(transcript, 'bt_off');                             break;
+      case 'FLASHLIGHT_ON':   handleFlashlight(resolvedTranscript, true);                          break;
+      case 'FLASHLIGHT_OFF':  handleFlashlight(resolvedTranscript, false);                         break;
+      case 'VOLUME_UP':       handleVolumeChange(resolvedTranscript, 'up');                        break;
+      case 'VOLUME_DOWN':     handleVolumeChange(resolvedTranscript, 'down');                      break;
+      case 'VOLUME_SET':      handleVolumeChange(resolvedTranscript, 'set', command.percent);      break;
+      case 'VOLUME_MUTE':     handleVolumeChange(resolvedTranscript, 'mute');                      break;
+      case 'VOLUME_MAX':      handleVolumeChange(resolvedTranscript, 'max');                       break;
+      case 'BRIGHTNESS_UP':   handleBrightnessChange(resolvedTranscript, 'up');                    break;
+      case 'BRIGHTNESS_DOWN': handleBrightnessChange(resolvedTranscript, 'down');                  break;
+      case 'BRIGHTNESS_SET':  handleBrightnessChange(resolvedTranscript, 'set', command.percent);  break;
+      case 'BRIGHTNESS_MIN':  handleBrightnessChange(resolvedTranscript, 'min');                   break;
+      case 'BRIGHTNESS_MAX':  handleBrightnessChange(resolvedTranscript, 'max');                   break;
+      case 'BATTERY_STATUS':  handleBattery(resolvedTranscript);                                   break;
+      case 'WIFI_ON':         handleConnectivity(resolvedTranscript, 'wifi_on');                   break;
+      case 'WIFI_OFF':        handleConnectivity(resolvedTranscript, 'wifi_off');                  break;
+      case 'BLUETOOTH_ON':    handleConnectivity(resolvedTranscript, 'bt_on');                     break;
+      case 'BLUETOOTH_OFF':   handleConnectivity(resolvedTranscript, 'bt_off');                    break;
+      // ── v0.8 Memory ───────────────────────────────────────────────────────
+      case 'MEMORY_STORE_NAME': handleMemoryStoreName(command.name);                               break;
+      case 'MEMORY_QUERY_NAME': handleMemoryQueryName();                                            break;
+      // ── v0.8 Small Talk ───────────────────────────────────────────────────
+      case 'SMALL_TALK': handleSmallTalk(command.input);                                           break;
+      // ── v0.8 Study ────────────────────────────────────────────────────────
+      case 'STUDY_TIMER':     handleStudyTimer(command.minutes, command.durationDisplay);          break;
+      case 'STUDY_REMINDERS': handleStudyReminders();                                              break;
+      case 'STUDY_CHECKLIST': handleStudyChecklist();                                              break;
+      // ── v0.8 UNKNOWN fallback ─────────────────────────────────────────────
+      case 'UNKNOWN': {
+        const suggestion = getUnknownResponse(resolvedTranscript);
+        setActivePanel('small_talk');
+        setSmallTalkFeedback({ phase: 'unknown', transcript: resolvedTranscript, suggestion });
+        speak(suggestion);
+        addTurn(resolvedTranscript, 'UNKNOWN', suggestion);
+        break;
+      }
     }
   }, [voiceState, transcript]);
 
@@ -197,12 +281,17 @@ export default function VoiceScreen() {
     setActivePanel('open_app');
     setAppFeedback({ phase: 'launching', transcript: raw, appName: app.displayName });
     speak(`Opening ${app.displayName}`);
+    // v0.8: update context + memory
+    updateApp(app.displayName);
+    recordAppUsage(app.displayName, app.packageName).catch(() => {});
     const result = await launchApp(app);
     if (result.success) {
       setAppFeedback({ phase: 'success', transcript: raw, appName: app.displayName });
+      addTurn(raw, 'OPEN_APP', `Opening ${app.displayName}`);
     } else {
       speak("I couldn't find that app.");
       setAppFeedback({ phase: 'failed', transcript: raw, appName: app.displayName });
+      addTurn(raw, 'OPEN_APP', `Failed to open ${app.displayName}`);
     }
   }
 
@@ -244,6 +333,10 @@ export default function VoiceScreen() {
     async (raw: string, contactName: string, contact: ContactMatch) => {
       setCallFeedback({ phase: 'calling', transcript: raw, contactName, contact });
       speak(`Calling ${contact.displayName}.`);
+      // v0.8: update context + memory
+      updateContact(contact.displayName, contact.phoneNumber);
+      recordContactUsage(contact.displayName, contact.phoneNumber, 'call').catch(() => {});
+      addTurn(raw, 'CALL_CONTACT', `Calling ${contact.displayName}`);
       const result = await initiateCall(contact.phoneNumber);
       if (result.success) {
         setCallFeedback({ phase: 'call_started', transcript: raw, contactName, contact, method: result.method });
@@ -292,7 +385,7 @@ export default function VoiceScreen() {
       return;
     }
 
-    const contact = matches.length === 1 ? matches[0] : matches[0]; // pick first for simplicity
+    const contact = matches[0];
 
     if (matches.length > 1) {
       setSmsFeedback({ phase: 'multiple_found', transcript: raw, contactName, contacts: matches });
@@ -300,7 +393,6 @@ export default function VoiceScreen() {
     }
 
     if (!message) {
-      // Ask user to speak the message
       pendingSmsRef.current = { contactName, contact, transcript: raw };
       speak(`What would you like to say to ${contact.displayName}?`);
       setSmsFeedback({ phase: 'awaiting_message', transcript: raw, contactName, contact });
@@ -325,6 +417,10 @@ export default function VoiceScreen() {
 
     if (result.success) {
       speak(`Message sent to ${contact.displayName}.`);
+      // v0.8: update context + memory
+      updateContact(contact.displayName, contact.phoneNumber);
+      recordContactUsage(contact.displayName, contact.phoneNumber, 'sms').catch(() => {});
+      addTurn(raw, 'SEND_SMS', `Sent message to ${contact.displayName}`);
       setSmsFeedback({ phase: 'sent', transcript: raw, contactName, contact, message });
     } else {
       speak("I couldn't send the message.");
@@ -389,9 +485,8 @@ export default function VoiceScreen() {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async function handleStartTimer(totalMs: number, durationDisplay: string) {
-    const result = await timerManager.startNewTimer(totalMs, durationDisplay);
+    await timerManager.startNewTimer(totalMs, durationDisplay);
     speak(`${durationDisplay} timer started.`);
-    // The TimerDisplay component shows the countdown; no panel needed
     setActivePanel('none');
   }
 
@@ -399,7 +494,7 @@ export default function VoiceScreen() {
     const result = await timerManager.cancelActiveTimer();
     speak(result.message);
     setActivePanel('timer_result');
-    setAlarmFeedback({ phase: 'none' }); // just surface the message via TTS
+    setAlarmFeedback({ phase: 'none' });
   }
 
   async function handleQueryTimer() {
@@ -498,7 +593,6 @@ export default function VoiceScreen() {
       return;
     }
     if (result.events.length === 1) {
-      // Delete the only event
       await doDeleteEvent(result.events[0]);
     } else {
       speak("Which event would you like to delete? Tap it below.");
@@ -625,6 +719,97 @@ export default function VoiceScreen() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // v0.8 MEMORY handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleMemoryStoreName(name: string) {
+    setActivePanel('memory');
+    await setUserName(name);
+    setPreferredName(name);
+    const response = `Got it! I'll call you ${name}.`;
+    speak(response);
+    setMemoryFeedback({ phase: 'stored', key: 'Name', value: name });
+    addTurn(`My name is ${name}`, 'MEMORY_STORE_NAME', response);
+  }
+
+  async function handleMemoryQueryName() {
+    setActivePanel('memory');
+    const name = await getUserName();
+    if (name) {
+      const response = `Your name is ${name}.`;
+      speak(response);
+      setMemoryFeedback({ phase: 'recalled', key: 'Name', value: name });
+      addTurn("What's my name?", 'MEMORY_QUERY_NAME', response);
+    } else {
+      const response = "I don't know your name yet. Tell me by saying 'My name is...'";
+      speak(response);
+      setMemoryFeedback({ phase: 'not_found', key: 'name' });
+      addTurn("What's my name?", 'MEMORY_QUERY_NAME', response);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // v0.8 SMALL TALK handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function handleSmallTalk(input: string) {
+    setActivePanel('small_talk');
+    const response = getSmallTalkResponse(input);
+    speak(response);
+    setSmallTalkFeedback({ phase: 'response', response });
+    addTurn(input, 'SMALL_TALK', response);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // v0.8 STUDY handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleStudyTimer(minutes: number, durationDisplay: string) {
+    const totalMs = minutes * 60 * 1000;
+    await timerManager.startNewTimer(totalMs, `${minutes} minute`);
+    const greeting = preferredName ? `Go for it, ${preferredName}!` : 'Stay focused!';
+    const response = `${minutes}-minute study timer started. ${greeting}`;
+    speak(response);
+    setActivePanel('study');
+    setStudyFeedback({ phase: 'timer_started', minutes });
+    addTurn(`Start ${minutes} minute study timer`, 'STUDY_TIMER', response);
+  }
+
+  async function handleStudyReminders() {
+    setActivePanel('study');
+    const reminders = await getTodayStudyReminders();
+    if (reminders.length === 0) {
+      speak("You have no study reminders for today. Try: 'Remind me to revise Chemistry at 7 PM'.");
+      setStudyFeedback({ phase: 'no_study_data' });
+    } else {
+      const count = reminders.length;
+      speak(`You have ${count} study reminder${count !== 1 ? 's' : ''} today: ${reminders.map(r => r.message).join(', ')}.`);
+      setStudyFeedback({ phase: 'reminders', reminders });
+    }
+    addTurn("Show study reminders", 'STUDY_REMINDERS', `${reminders.length} reminders found`);
+  }
+
+  async function handleStudyChecklist() {
+    setActivePanel('study');
+    const { items, generated } = await buildStudyChecklist();
+    if (items.length === 0) {
+      speak("No checklist items yet. Add study reminders to auto-generate your checklist.");
+      setStudyFeedback({ phase: 'no_study_data' });
+    } else {
+      speak(`Your study checklist has ${items.length} item${items.length !== 1 ? 's' : ''}.`);
+      setStudyFeedback({ phase: 'checklist', items, generated });
+    }
+    addTurn("Show study checklist", 'STUDY_CHECKLIST', `${items.length} items`);
+  }
+
+  const handleToggleChecklistItem = useCallback(async (id: string) => {
+    await toggleChecklistItem(id);
+    // Re-fetch and update state
+    const { items, generated } = await buildStudyChecklist();
+    setStudyFeedback(s => s.phase === 'checklist' ? { phase: 'checklist', items, generated } : s);
+  }, []);
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Mic button handler
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -635,29 +820,13 @@ export default function VoiceScreen() {
       await stopListening();
     } else if (voiceState === 'result' || voiceState === 'error') {
       lastProcessed.current = '';
-      setActivePanel('none');
-      setAppFeedback({ phase: 'none' });
-      setCallFeedback({ phase: 'none' });
-      setSmsFeedback({ phase: 'none' });
-      setAlarmFeedback({ phase: 'none' });
-      setReminderFeedback({ phase: 'none' });
-      setCalendarFeedback({ phase: 'none' });
-      setDeviceFeedback({ phase: 'none' });
-      pendingSmsRef.current = null;
+      clearAllPanels();
       stopSpeaking();
       resetVoice();
       setTimeout(startListening, 120);
     } else if (voiceState === 'idle') {
       lastProcessed.current = '';
-      setActivePanel('none');
-      setAppFeedback({ phase: 'none' });
-      setCallFeedback({ phase: 'none' });
-      setSmsFeedback({ phase: 'none' });
-      setAlarmFeedback({ phase: 'none' });
-      setReminderFeedback({ phase: 'none' });
-      setCalendarFeedback({ phase: 'none' });
-      setDeviceFeedback({ phase: 'none' });
-      pendingSmsRef.current = null;
+      clearAllPanels();
       await startListening();
     } else if (voiceState === 'processing') {
       // Do nothing — wait for result
@@ -671,13 +840,16 @@ export default function VoiceScreen() {
   const showLiveTranscript = (voiceState === 'listening' || voiceState === 'processing') && !!partialTranscript;
   const showHint = activePanel === 'none' && !showLiveTranscript && timerManager.state.isIdle && stopwatch.state.status === 'idle';
 
+  const greetName = preferredName ? `, ${preferredName}` : '';
+
   const HINTS = [
+    '"Call Mom"  ·  "Text Rahul I\'ll be late"  ·  "Open WhatsApp"',
+    '"I want to use Chrome"  ·  "Start WhatsApp"  ·  "Launch Netflix"',
     '"Set alarm for 6 AM"  ·  "Start a 10 minute timer"',
-    '"Turn on flashlight"  ·  "Torch off"',
-    '"Volume up"  ·  "Set volume to 50 percent"',
-    '"Battery percentage"  ·  "Max brightness"',
-    '"Call Mom"  ·  "Open WhatsApp"  ·  "Start stopwatch"',
-    '"Turn on Bluetooth"  ·  "Wi-Fi off"',
+    '"Start a 25-minute study timer"  ·  "Show my study checklist"',
+    '"My name is Rahul"  ·  "What\'s my name?"',
+    '"Turn on flashlight"  ·  "Volume up"  ·  "Battery percentage"',
+    '"Who are you?"  ·  "What can you do?"  ·  "Good morning"',
   ];
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -702,12 +874,14 @@ export default function VoiceScreen() {
         <View style={styles.badgeRow}>
           <View style={[styles.badge, { backgroundColor: 'rgba(124,58,237,0.18)', borderColor: 'rgba(124,58,237,0.35)' }]}>
             <View style={[styles.badgeDot, { backgroundColor: colors.accent }]} />
-            <Text style={[styles.badgeText, { color: colors.accent }]}>AI ASSISTANT</Text>
+            <Text style={[styles.badgeText, { color: colors.accent }]}>AI ASSISTANT · v0.8</Text>
           </View>
         </View>
         <Text style={[styles.appName, { color: colors.foreground }]}>VEDRA</Text>
         <Text style={[styles.appTagline, { color: colors.mutedForeground }]}>
-          Speak naturally. I'll take care of it.
+          {preferredName
+            ? `Hello${greetName}! Speak naturally.`
+            : 'Speak naturally. I\'ll take care of it.'}
         </Text>
       </View>
 
@@ -775,12 +949,23 @@ export default function VoiceScreen() {
         {/* ── Device control feedback (v0.6) ── */}
         {activePanel === 'device' && <DeviceControlFeedback state={deviceFeedback} />}
 
+        {/* ── v0.8: Memory feedback ── */}
+        {activePanel === 'memory' && <MemoryFeedback state={memoryFeedback} />}
+
+        {/* ── v0.8: Small talk / unknown ── */}
+        {activePanel === 'small_talk' && <SmallTalkFeedback state={smallTalkFeedback} />}
+
+        {/* ── v0.8: Study assistant ── */}
+        {activePanel === 'study' && (
+          <StudyFeedback state={studyFeedback} onToggleItem={handleToggleChecklistItem} />
+        )}
+
         {/* ── Idle hints ── */}
         {showHint && (
           <View style={styles.emptyCard}>
             <Text style={[styles.hint, { color: colors.mutedForeground }]}>
               {voiceState === 'unavailable'
-                ? 'Build the APK to enable voice recognition'
+                ? 'Build the APK to enable voice recognition on your device'
                 : HINTS.map((h, i) => (i === HINTS.length - 1 ? h : `${h}\n`)).join('')}
             </Text>
           </View>

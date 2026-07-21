@@ -1,6 +1,6 @@
-# [Project name]
+# Vedra — Offline AI Voice Assistant
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+An offline-first Android voice assistant that understands natural language, remembers user preferences locally, and executes device actions — all without sending data to any server.
 
 ## Run & Operate
 
@@ -22,15 +22,36 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/mobile/app/index.tsx` — Main voice screen (VoiceScreen), all command handlers
+- `artifacts/mobile/utils/commandParser.ts` — Intent parsing engine (v0.8: 40+ command types)
+- `artifacts/mobile/utils/memoryManager.ts` — Local AsyncStorage memory (name, contacts, apps, commands)
+- `artifacts/mobile/utils/conversationContext.ts` — Short-term context for pronoun resolution
+- `artifacts/mobile/utils/studyAssistant.ts` — Study timer, checklist, study reminders
+- `artifacts/mobile/utils/smallTalkManager.ts` — Offline small-talk responses
+- `artifacts/mobile/utils/intentEngine.ts` — NLP pattern-scoring for fuzzy intent classification
+- `artifacts/mobile/components/` — All feedback UI panels
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **Offline-first**: All processing is on-device — no API calls, no cloud services.
+- **AsyncStorage for memory**: User name, favourite contacts/apps, and recent commands stored as JSON blobs. SQLite not needed at this scale.
+- **Conversation context is in-memory only**: Context window expires after 5 minutes of inactivity. Pronoun resolution ("him" → last mentioned contact) happens before parsing.
+- **commandParser is the source of truth**: intentEngine.ts provides fuzzy NLP scoring but commandParser is still the canonical parser called for every transcript. The two layers complement each other.
+- **Study assistant is fully offline**: Builds checklist from existing reminders using keyword matching — no external AI required.
 
-## Product
+## Product (v0.8 features)
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Voice recognition (offline-first via Android SpeechRecognizer)
+- Text-to-Speech response
+- Open apps / make calls / send SMS
+- Alarms, timers, stopwatch, reminders, calendar
+- Device controls: flashlight, volume, brightness, Wi-Fi, Bluetooth, battery
+- **v0.8 NEW** — Intent recognition: understands varied phrasings ("I want to use WhatsApp", "Can you launch Chrome?")
+- **v0.8 NEW** — Local memory: remembers your name and usage patterns
+- **v0.8 NEW** — Conversation context: pronoun resolution across turns ("send him a text")
+- **v0.8 NEW** — Study assistant: Pomodoro timers, study reminders, auto-generated checklists
+- **v0.8 NEW** — Small talk: greetings, capability questions, friendly fallbacks
+- **v0.8 NEW** — Unknown command graceful fallback with suggestions
 
 ## User preferences
 
@@ -38,7 +59,9 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Voice recognition requires a native APK build — the web/Expo Go preview shows "Preview mode" for the mic.
+- Scan the QR code in the Expo workflow with **Expo Go** on Android to test on a real device.
+- `expo-calendar`, `expo-notifications`, and `expo-sms` show version mismatch warnings — these are cosmetic and don't affect functionality.
 
 ## Pointers
 
