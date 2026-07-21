@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "ac6482ca-4361-4255-99af-bd1146f1e27b"
+      }
+    },
+    "android": {
+      "package": "dev.vedra.in"
+    }
+  }
+}
