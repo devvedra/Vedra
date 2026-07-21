@@ -26,7 +26,12 @@
         "android.permission.INTERNET",
         "android.permission.CALL_PHONE",
         "android.permission.READ_CONTACTS",
-        "android.permission.SEND_SMS"
+        "android.permission.SEND_SMS",
+        "android.permission.READ_CALENDAR",
+        "android.permission.WRITE_CALENDAR",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -40,7 +45,16 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#6366F1",
+          "sounds": []
+        }
+      ],
+      "expo-calendar"
     ],
     "experiments": {
       "typedRoutes": true,

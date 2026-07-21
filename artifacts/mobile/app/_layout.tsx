@@ -13,6 +13,8 @@ import {
 } from '@expo-google-fonts/inter';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import { initNotifications } from '@/utils/notificationManager';
+import { pruneOldReminders } from '@/utils/reminderManager';
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
@@ -21,7 +23,6 @@ const queryClient = new QueryClient();
 
 function RootLayoutNav() {
   return (
-    // Single-screen app — no tabs, no header chrome
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
     </Stack>
@@ -41,6 +42,12 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, fontError]);
+
+  // Initialise notifications and prune stale reminders on startup
+  useEffect(() => {
+    initNotifications().catch(() => {});
+    pruneOldReminders().catch(() => {});
+  }, []);
 
   if (!fontsLoaded && !fontError) return null;
 

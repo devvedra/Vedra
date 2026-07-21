@@ -1,23 +1,30 @@
 /**
- * commandParser.ts — Vedra Command Parser  (v0.4)
+ * commandParser.ts — Vedra Command Parser (v0.5)
  *
- * Parses free-form voice transcripts into structured commands, entirely
- * offline using string matching. No network calls, no AI services.
+ * Parses free-form voice transcripts into typed commands, entirely offline
+ * using string matching. No network calls, no AI services.
  *
- * ── Supported command types ───────────────────────────────────────────────────
+ * ── Supported command types ─────────────────────────────────────────────────
  *
- *  OPEN_APP      — "Open WhatsApp", "Launch Chrome", "Start Calculator"…
- *  CALL_CONTACT  — "Call Mom", "Phone Rahul", "Dial Dad"…
- *  SEND_SMS      — "Send SMS to Mom", "Text Rahul", "Tell Dad I'm home"…
- *                  Optional inline message: "Send SMS to Mom saying I'll be late"
- *
- * ── Extending the parser ─────────────────────────────────────────────────────
- *
- *  To add a new app:      push an AppDefinition into APP_REGISTRY.
- *  To add a new verb:     add a string to OPEN_VERBS, CALL_VERBS, or SMS_VERBS.
- *  To add a command type: add a union member to ParsedCommand and a new
- *                         parse pass inside parseCommand().
+ *  OPEN_APP      — "Open WhatsApp", "Launch Chrome"…
+ *  CALL_CONTACT  — "Call Mom", "Dial Rahul"…
+ *  SEND_SMS      — "Text Mom saying I'll be late"…
+ *  SET_ALARM     — "Set alarm for 6 AM", "Wake me at 5:30"…
+ *  CANCEL_ALARM  — "Cancel my alarm", "Delete 6 AM alarm"…
+ *  LIST_ALARMS   — "Show my alarms", "What alarms do I have?"…
+ *  START_TIMER   — "Start a 10 minute timer", "Set timer for 25 min"…
+ *  CANCEL_TIMER  — "Cancel timer", "Stop timer"…
+ *  QUERY_TIMER   — "How much time is left?", "Check timer"…
+ *  STOPWATCH     — "Start stopwatch", "Pause stopwatch"…
+ *  SET_REMINDER  — "Remind me to study at 7 PM"…
+ *  LIST_REMINDERS — "Show my reminders"…
+ *  DELETE_REMINDER — "Delete my reminder"…
+ *  CREATE_EVENT  — "Create meeting tomorrow at 10 AM"…
+ *  LIST_EVENTS   — "Show today's schedule", "What's on my calendar?"…
+ *  DELETE_EVENT  — "Delete today's meeting"…
  */
+
+import { parseAbsoluteTime, parseDuration } from './timeParser';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -25,386 +32,381 @@
 
 /** Metadata for a launchable Android app. */
 export type AppDefinition = {
-  /** Human-readable name for TTS and UI */
   displayName: string;
-  /** Lower-case keywords that identify this app in a voice command */
   keywords: string[];
-  /** Single Android package name (consistent across devices) */
   packageName?: string;
-  /**
-   * Multiple package names tried in order; first installed wins.
-   * For apps that ship under different names per manufacturer.
-   */
   packageOptions?: string[];
-  /**
-   * Android intent action for system-level features (Camera, Settings…).
-   * When set the launcher fires this action without a package name.
-   */
   intentAction?: string;
 };
 
-/**
- * A successfully parsed voice command.
- * Add new union members here to support additional command types.
- */
 export type ParsedCommand =
+  // ── Existing ───────────────────────────────────────────────────────────────
   | { type: 'OPEN_APP';     app: AppDefinition }
   | { type: 'CALL_CONTACT'; contactName: string }
-  | { type: 'SEND_SMS';     contactName: string; message?: string };
+  | { type: 'SEND_SMS';     contactName: string; message?: string }
+  // ── Alarms ─────────────────────────────────────────────────────────────────
+  | { type: 'SET_ALARM';    hour: number; minute: number; timeDisplay: string; label?: string }
+  | { type: 'CANCEL_ALARM'; timeDisplay?: string }
+  | { type: 'LIST_ALARMS' }
+  // ── Timers ─────────────────────────────────────────────────────────────────
+  | { type: 'START_TIMER';  totalMs: number; durationDisplay: string }
+  | { type: 'CANCEL_TIMER' }
+  | { type: 'QUERY_TIMER' }
+  // ── Stopwatch ──────────────────────────────────────────────────────────────
+  | { type: 'STOPWATCH';    action: 'start' | 'pause' | 'resume' | 'stop' | 'reset' | 'query' }
+  // ── Reminders ──────────────────────────────────────────────────────────────
+  | { type: 'SET_REMINDER'; message: string; timeDisplay: string; triggerMs: number }
+  | { type: 'LIST_REMINDERS' }
+  | { type: 'DELETE_REMINDER' }
+  // ── Calendar ───────────────────────────────────────────────────────────────
+  | { type: 'CREATE_EVENT'; title: string; timeDisplay: string; startMs: number; endMs: number }
+  | { type: 'LIST_EVENTS' }
+  | { type: 'DELETE_EVENT' };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// App Registry  (OPEN_APP data)
+// App Registry
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const APP_REGISTRY: AppDefinition[] = [
-  // ── Communication ──────────────────────────────────────────────────────────
-  {
-    displayName: 'WhatsApp',
-    keywords: ['whatsapp', 'whats app'],
-    packageName: 'com.whatsapp',
-  },
-  {
-    displayName: 'Gmail',
-    keywords: ['gmail', 'g mail', 'email', 'mail', 'my email'],
-    packageName: 'com.google.android.gm',
-  },
-
-  // ── Google apps ────────────────────────────────────────────────────────────
-  {
-    displayName: 'Chrome',
-    keywords: ['chrome', 'google chrome', 'browser', 'web browser', 'internet'],
-    packageOptions: ['com.android.chrome', 'com.chrome.beta', 'com.chrome.dev'],
-  },
-  {
-    displayName: 'YouTube',
-    keywords: ['youtube', 'you tube', 'yt', 'videos'],
-    packageName: 'com.google.android.youtube',
-  },
-  {
-    displayName: 'Maps',
-    keywords: ['maps', 'google maps', 'navigation', 'directions'],
-    packageName: 'com.google.android.apps.maps',
-  },
-  {
-    displayName: 'Google Photos',
-    keywords: ['google photos', 'photos', 'gallery', 'pictures', 'photo gallery', 'my photos', 'images'],
-    packageOptions: [
-      'com.google.android.apps.photos',
-      'com.sec.android.gallery3d',
-      'com.miui.gallery',
-      'com.android.gallery3d',
-      'com.oneplus.gallery',
-      'com.coloros.gallery3d',
-    ],
-  },
-
-  // ── System apps ────────────────────────────────────────────────────────────
-  {
-    displayName: 'Camera',
-    keywords: ['camera', 'take photo', 'take picture', 'take a photo', 'selfie'],
-    intentAction: 'android.media.action.STILL_IMAGE_CAMERA',
-  },
-  {
-    displayName: 'Settings',
-    keywords: ['settings', 'setting', 'preferences', 'configuration', 'system settings'],
-    intentAction: 'android.settings.SETTINGS',
-  },
-  {
-    displayName: 'Calculator',
-    keywords: ['calculator', 'calc', 'calculate'],
-    packageOptions: [
-      'com.google.android.calculator',
-      'com.sec.android.calculator',
-      'com.miui.calculator',
-      'com.android.calculator2',
-      'com.oneplus.calculator',
-      'com.coloros.calculator',
-      'com.realme.calculator',
-    ],
-  },
-  {
-    displayName: 'Files',
-    keywords: ['files', 'file manager', 'my files', 'file explorer', 'documents', 'storage'],
-    packageOptions: [
-      'com.google.android.documentsui',
-      'com.sec.android.app.myfiles',
-      'com.miui.fileexplorer',
-      'com.android.documentsui',
-      'com.oneplus.filemanager',
-    ],
-  },
+  { displayName: 'WhatsApp',      keywords: ['whatsapp', 'whats app'],                       packageName: 'com.whatsapp' },
+  { displayName: 'Gmail',         keywords: ['gmail', 'g mail', 'email', 'mail', 'my email'], packageName: 'com.google.android.gm' },
+  { displayName: 'Chrome',        keywords: ['chrome', 'google chrome', 'browser', 'web browser', 'internet'], packageOptions: ['com.android.chrome', 'com.chrome.beta'] },
+  { displayName: 'YouTube',       keywords: ['youtube', 'you tube', 'yt', 'videos'],           packageName: 'com.google.android.youtube' },
+  { displayName: 'Maps',          keywords: ['maps', 'google maps', 'navigation', 'directions'], packageName: 'com.google.android.apps.maps' },
+  { displayName: 'Google Photos', keywords: ['google photos', 'photos', 'gallery', 'pictures', 'photo gallery', 'my photos', 'images'], packageOptions: ['com.google.android.apps.photos', 'com.sec.android.gallery3d', 'com.miui.gallery', 'com.android.gallery3d'] },
+  { displayName: 'Camera',        keywords: ['camera', 'take photo', 'take picture', 'selfie'], intentAction: 'android.media.action.STILL_IMAGE_CAMERA' },
+  { displayName: 'Settings',      keywords: ['settings', 'setting', 'preferences', 'configuration'], intentAction: 'android.settings.SETTINGS' },
+  { displayName: 'Calculator',    keywords: ['calculator', 'calc', 'calculate'],               packageOptions: ['com.google.android.calculator', 'com.sec.android.calculator', 'com.miui.calculator', 'com.android.calculator2'] },
+  { displayName: 'Files',         keywords: ['files', 'file manager', 'my files', 'file explorer', 'documents', 'storage'], packageOptions: ['com.google.android.documentsui', 'com.sec.android.app.myfiles', 'com.miui.fileexplorer'] },
+  { displayName: 'Spotify',       keywords: ['spotify', 'music', 'my music'],                  packageName: 'com.spotify.music' },
+  { displayName: 'Instagram',     keywords: ['instagram', 'insta'],                            packageName: 'com.instagram.android' },
+  { displayName: 'Facebook',      keywords: ['facebook', 'fb'],                                packageName: 'com.facebook.katana' },
+  { displayName: 'Twitter',       keywords: ['twitter', 'x', 'tweets'],                        packageOptions: ['com.twitter.android', 'com.x.android'] },
+  { displayName: 'Netflix',       keywords: ['netflix'],                                       packageName: 'com.netflix.mediaclient' },
+  { displayName: 'Telegram',      keywords: ['telegram'],                                      packageName: 'org.telegram.messenger' },
+  { displayName: 'Clock',         keywords: ['clock', 'alarm clock'],                          packageOptions: ['com.google.android.deskclock', 'com.sec.android.app.clockpackage'] },
+  { displayName: 'Contacts',      keywords: ['contacts', 'address book', 'phone book'],        packageOptions: ['com.google.android.contacts', 'com.samsung.android.contacts'] },
+  { displayName: 'Play Store',    keywords: ['play store', 'google play', 'app store'],        packageName: 'com.android.vending' },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Verb lists
+// Verb / keyword lists
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Verbs that precede an app name in an OPEN_APP command.
- * Sorted longest-first so multi-word phrases match before their prefixes.
- */
-const OPEN_VERBS: string[] = [
-  'navigate to',
-  'take me to',
-  'go to',
-  'bring up',
-  'open',
-  'launch',
-  'start',
-  'run',
-  'show',
-  'load',
-];
+const OPEN_VERBS  = ['navigate to','take me to','go to','bring up','open','launch','start','run','show','load'];
+const CALL_VERBS  = ['make a phone call to','make a call to','give a call to','place a call to','call up','phone up','ring up','call','phone','dial','ring'];
+const SMS_VERBS   = ['send an sms to','send a sms to','send sms to','send a text message to','send text message to','send a text to','send text to','send a message to','send message to','text','message'];
 
-/**
- * Verbs that precede a contact name in a CALL_CONTACT command.
- * Sorted longest-first.
- */
-const CALL_VERBS: string[] = [
-  'make a phone call to',
-  'make a call to',
-  'give a call to',
-  'place a call to',
-  'call up',
-  'phone up',
-  'ring up',
-  'call',
-  'phone',
-  'dial',
-  'ring',
-];
+const ALARM_SET_VERBS  = ['set an alarm for','set alarm for','create alarm for','create an alarm for','set alarm at','alarm at','alarm for','wake me up at','wake me at','set wake up at'];
+const ALARM_CANCEL_KW  = ['cancel my alarm','cancel alarm','delete alarm','remove alarm','delete my alarm','remove my alarm','dismiss alarm'];
+const ALARM_LIST_KW    = ['show my alarms','show alarms','list my alarms','list alarms','what alarms','my alarms','all alarms'];
 
-/**
- * Verbs that precede a contact name in a SEND_SMS command.
- * Sorted longest-first.
- * After matching, the remainder is parsed for an optional inline message.
- */
-const SMS_VERBS: string[] = [
-  'send an sms to',
-  'send a sms to',
-  'send sms to',
-  'send a text message to',
-  'send text message to',
-  'send a text to',
-  'send text to',
-  'send a message to',
-  'send message to',
-  'text',
-  'message',
-];
+const TIMER_START_VERBS = ['start a timer for','start timer for','set a timer for','set timer for','create timer for','create a timer for','timer for','start a','start'];
+const TIMER_CANCEL_KW   = ['cancel timer','cancel my timer','stop timer','stop my timer','cancel the timer','end timer'];
+const TIMER_QUERY_KW    = ['how much time is left','how much time left','time remaining','time left','check timer','timer status','timer remaining','whats left on the timer'];
 
-/**
- * Polite prefixes stripped before verb matching.
- * Order matters: strip longer phrases before shorter ones.
- */
+const STOPWATCH_START_KW  = ['start stopwatch','begin stopwatch','start the stopwatch','stopwatch start','start a stopwatch'];
+const STOPWATCH_PAUSE_KW  = ['pause stopwatch','pause the stopwatch','stopwatch pause'];
+const STOPWATCH_RESUME_KW = ['resume stopwatch','resume the stopwatch','continue stopwatch','stopwatch resume'];
+const STOPWATCH_STOP_KW   = ['stop stopwatch','stop the stopwatch','stopwatch stop'];
+const STOPWATCH_RESET_KW  = ['reset stopwatch','reset the stopwatch','stopwatch reset','clear stopwatch'];
+const STOPWATCH_QUERY_KW  = ['stopwatch time','how long has the stopwatch been running','stopwatch elapsed','check stopwatch','current stopwatch','stopwatch status'];
+
+const REMINDER_SET_VERBS = ['remind me to','remind me about','remind me that','set a reminder to','set reminder to','create a reminder to','create reminder to','reminder to'];
+const REMINDER_LIST_KW   = ['show my reminders','show reminders','list reminders','list my reminders','my reminders','all reminders','what reminders'];
+const REMINDER_DELETE_KW = ['delete my reminder','cancel my reminder','remove my reminder','delete reminder','cancel reminder','remove reminder'];
+
+const EVENT_CREATE_VERBS = ['create a meeting','create meeting','add a meeting','add meeting','schedule meeting','schedule a meeting','create an event','create event','add an event','add event','create a calendar event','add calendar event'];
+const EVENT_LIST_KW      = ["show today's schedule","today's schedule",'show my schedule','my schedule','show my calendar','whats on my calendar','what is on my calendar','show todays schedule','what events',"what's on my calendar"];
+const EVENT_DELETE_KW    = ["delete today's meeting",'cancel today\'s meeting','delete meeting','cancel meeting','remove meeting','delete event','cancel event','remove event'];
+
 const POLITE_PREFIXES: RegExp[] = [
-  /^please\s+/,
-  /^can you please\s+/,
-  /^can you\s+/,
-  /^could you please\s+/,
-  /^could you\s+/,
-  /^hey vedra[,.]?\s+/,
-  /^ok vedra[,.]?\s+/,
-  /^vedra[,.]?\s+/,
+  /^please\s+/,/^can you please\s+/,/^can you\s+/,/^could you please\s+/,
+  /^could you\s+/,/^hey vedra[,.]?\s+/,/^ok vedra[,.]?\s+/,/^vedra[,.]?\s+/,
 ];
 
-/** Articles / possessives between a verb and the target ("my", "the", "a"…) */
-const FILLER_WORDS = /^(?:my|the|a|an)\s+/;
-
-/**
- * Patterns that split a contact name from an inline message.
- * Each captures (contactName, message) as groups 1 and 2.
- * Sorted longest/most-specific first.
- */
-const INLINE_MSG_PATTERNS: RegExp[] = [
+const FILLER_WORDS   = /^(?:my|the|a|an)\s+/;
+const INLINE_MSG_PAT: RegExp[] = [
   /^(.+?)\s+with\s+the\s+message\s+(.+)$/,
   /^(.+?)\s+with\s+message\s+(.+)$/,
   /^(.+?)\s+that\s+says\s+(.+)$/,
   /^(.+?)\s+saying\s+(.+)$/,
   /^(.+?)\s*:\s*(.+)$/,
 ];
-
-/**
- * "tell <name> <message>" — first word after "tell" is the contact name,
- * everything else is the message. Works great for single-word nicknames
- * (Mom, Dad, Rahul) which covers the vast majority of cases.
- *
- * Pattern: tell [optional "that"] <name> <message>
- * Captures: (name, message)
- */
 const TELL_PATTERN = /^tell\s+(\S+)\s+(.+)$/;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Parse a raw voice transcript into a typed command.
- *
- * Parsing order:
- *   1. OPEN_APP      (tried first — apps have distinctive names)
- *   2. CALL_CONTACT
- *   3. SEND_SMS
- *
- * Returns null if the transcript matches no known command pattern.
- *
- * @param text - Raw transcript from the speech recogniser
- */
 export function parseCommand(text: string): ParsedCommand | null {
   const cleaned = normalise(text);
 
   return (
-    tryOpenApp(cleaned) ??
-    tryCallContact(cleaned) ??
-    trySendSms(cleaned) ??
+    tryOpenApp(cleaned)      ??
+    tryCallContact(cleaned)  ??
+    trySendSms(cleaned)      ??
+    trySetAlarm(cleaned)     ??
+    tryCancelAlarm(cleaned)  ??
+    tryListAlarms(cleaned)   ??
+    tryStartTimer(cleaned)   ??
+    tryCancelTimer(cleaned)  ??
+    tryQueryTimer(cleaned)   ??
+    tryStopwatch(cleaned)    ??
+    trySetReminder(cleaned)  ??
+    tryListReminders(cleaned)??
+    tryDeleteReminder(cleaned)??
+    tryCreateEvent(cleaned)  ??
+    tryListEvents(cleaned)   ??
+    tryDeleteEvent(cleaned)  ??
     null
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Parse passes
+// Existing parse passes
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Try to match an OPEN_APP command. Returns null on no match. */
-function tryOpenApp(cleaned: string): ParsedCommand | null {
+function tryOpenApp(c: string): ParsedCommand | null {
   for (const verb of OPEN_VERBS) {
-    const pattern = buildVerbPattern(verb);
-    const match = cleaned.match(pattern);
-    if (!match) continue;
-
-    const candidate = match[1].trim().replace(FILLER_WORDS, '').trim();
-    const app = findApp(candidate);
+    const m = c.match(buildVP(verb));
+    if (!m) continue;
+    const app = findApp(m[1].trim().replace(FILLER_WORDS, '').trim());
     if (app) return { type: 'OPEN_APP', app };
   }
   return null;
 }
 
-/** Try to match a CALL_CONTACT command. Returns null on no match. */
-function tryCallContact(cleaned: string): ParsedCommand | null {
+function tryCallContact(c: string): ParsedCommand | null {
   for (const verb of CALL_VERBS) {
-    const pattern = buildVerbPattern(verb);
-    const match = cleaned.match(pattern);
-    if (!match) continue;
-
-    const contactName = match[1].trim().replace(FILLER_WORDS, '').trim();
-    if (contactName.length >= 2) {
-      return { type: 'CALL_CONTACT', contactName };
-    }
+    const m = c.match(buildVP(verb));
+    if (!m) continue;
+    const name = m[1].trim().replace(FILLER_WORDS, '').trim();
+    if (name.length >= 2) return { type: 'CALL_CONTACT', contactName: name };
   }
   return null;
 }
 
-/**
- * Try to match a SEND_SMS command.
- *
- * Two sub-patterns are tried:
- *   A. "tell <name> <message>"          — special tell verb with implicit message
- *   B. "<sms-verb> <name> [msg-sep msg]" — standard SMS verbs + optional message
- *
- * Returns null on no match.
- */
-function trySendSms(cleaned: string): ParsedCommand | null {
-  // ── Pattern A: "tell <name> <message>" ─────────────────────────────────────
-  const tellMatch = cleaned.match(TELL_PATTERN);
-  if (tellMatch) {
-    const contactName = tellMatch[1].trim().replace(FILLER_WORDS, '').trim();
-    const message     = tellMatch[2].trim();
-    if (contactName.length >= 2 && message.length >= 1) {
-      return { type: 'SEND_SMS', contactName, message };
-    }
+function trySendSms(c: string): ParsedCommand | null {
+  const tell = c.match(TELL_PATTERN);
+  if (tell) {
+    const name = tell[1].trim().replace(FILLER_WORDS, '').trim();
+    const msg  = tell[2].trim();
+    if (name.length >= 2 && msg.length >= 1) return { type: 'SEND_SMS', contactName: name, message: msg };
   }
-
-  // ── Pattern B: SMS verb + contact + optional inline message ─────────────────
   for (const verb of SMS_VERBS) {
-    const pattern = buildVerbPattern(verb);
-    const match   = cleaned.match(pattern);
-    if (!match) continue;
+    const m = c.match(buildVP(verb));
+    if (!m) continue;
+    const rest = m[1].trim().replace(FILLER_WORDS, '').trim();
+    if (rest.length < 2) continue;
+    const extracted = extractInlineMsg(rest);
+    if (extracted) return { type: 'SEND_SMS', contactName: extracted.contactName, message: extracted.message };
+    return { type: 'SEND_SMS', contactName: rest };
+  }
+  return null;
+}
 
-    const remainder = match[1].trim().replace(FILLER_WORDS, '').trim();
-    if (remainder.length < 2) continue;
+// ═══════════════════════════════════════════════════════════════════════════════
+// New parse passes — Alarms
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    // Try to split remainder into "contactName + message" via separator patterns
-    const extracted = extractInlineMessage(remainder);
-    if (extracted) {
+function trySetAlarm(c: string): ParsedCommand | null {
+  for (const verb of ALARM_SET_VERBS) {
+    const m = c.match(buildVP(verb));
+    if (!m) continue;
+    const timeStr = m[1].trim();
+    const parsed = parseAbsoluteTime(timeStr);
+    if (parsed) {
       return {
-        type: 'SEND_SMS',
-        contactName: extracted.contactName,
-        message: extracted.message,
+        type: 'SET_ALARM',
+        hour: parsed.date.getHours(),
+        minute: parsed.date.getMinutes(),
+        timeDisplay: parsed.display,
       };
     }
-
-    // No inline message found — remainder is the contact name only
-    return { type: 'SEND_SMS', contactName: remainder };
   }
+  return null;
+}
 
+function tryCancelAlarm(c: string): ParsedCommand | null {
+  if (ALARM_CANCEL_KW.some((kw) => c.includes(kw))) {
+    // Try to extract a time if mentioned: "cancel my 6 am alarm"
+    const parsed = parseAbsoluteTime(c);
+    return {
+      type: 'CANCEL_ALARM',
+      timeDisplay: parsed?.display,
+    };
+  }
+  return null;
+}
+
+function tryListAlarms(c: string): ParsedCommand | null {
+  return ALARM_LIST_KW.some((kw) => c.includes(kw)) ? { type: 'LIST_ALARMS' } : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// New parse passes — Timers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function tryStartTimer(c: string): ParsedCommand | null {
+  // Pattern A: verb + duration ("start a 10 minute timer", "set timer for 25 min")
+  for (const verb of TIMER_START_VERBS) {
+    const m = c.match(buildVP(verb));
+    if (!m) continue;
+    const rest = m[1].trim();
+    // Remove trailing "timer" word
+    const clean = rest.replace(/\s*timer\s*$/, '').trim();
+    const dur = parseDuration(clean);
+    if (dur) return { type: 'START_TIMER', totalMs: dur.totalMs, durationDisplay: dur.display };
+  }
+  // Pattern B: duration + "timer" ("10 minute timer", "90 second timer")
+  const timerPattern = /^(\d+)\s*(hour|minute|min|second|sec)s?\s+timer$/;
+  const tp = c.match(timerPattern);
+  if (tp) {
+    const dur = parseDuration(c.replace(/\s*timer\s*$/, ''));
+    if (dur) return { type: 'START_TIMER', totalMs: dur.totalMs, durationDisplay: dur.display };
+  }
+  return null;
+}
+
+function tryCancelTimer(c: string): ParsedCommand | null {
+  return TIMER_CANCEL_KW.some((kw) => c.includes(kw)) ? { type: 'CANCEL_TIMER' } : null;
+}
+
+function tryQueryTimer(c: string): ParsedCommand | null {
+  return TIMER_QUERY_KW.some((kw) => c.includes(kw)) ? { type: 'QUERY_TIMER' } : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// New parse passes — Stopwatch
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function tryStopwatch(c: string): ParsedCommand | null {
+  if (STOPWATCH_RESET_KW.some((kw)  => c.includes(kw))) return { type: 'STOPWATCH', action: 'reset' };
+  if (STOPWATCH_RESUME_KW.some((kw) => c.includes(kw))) return { type: 'STOPWATCH', action: 'resume' };
+  if (STOPWATCH_PAUSE_KW.some((kw)  => c.includes(kw))) return { type: 'STOPWATCH', action: 'pause' };
+  if (STOPWATCH_STOP_KW.some((kw)   => c.includes(kw))) return { type: 'STOPWATCH', action: 'stop' };
+  if (STOPWATCH_START_KW.some((kw)  => c.includes(kw))) return { type: 'STOPWATCH', action: 'start' };
+  if (STOPWATCH_QUERY_KW.some((kw)  => c.includes(kw))) return { type: 'STOPWATCH', action: 'query' };
   return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Internal helpers
+// New parse passes — Reminders
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Normalise text: lowercase, strip punctuation, collapse whitespace, strip polite prefixes. */
-function normalise(text: string): string {
-  let s = text
-    .toLowerCase()
-    .replace(/[.,!?'"]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+function trySetReminder(c: string): ParsedCommand | null {
+  for (const verb of REMINDER_SET_VERBS) {
+    const m = c.match(buildVP(verb));
+    if (!m) continue;
+    const rest = m[1].trim(); // e.g. "study at 7 pm" or "drink water in 30 minutes"
 
-  for (const prefix of POLITE_PREFIXES) {
-    s = s.replace(prefix, '');
+    // Extract time from the rest
+    const timeExpr = parseAbsoluteTime(rest);
+    if (!timeExpr) continue;
+
+    // Remove time tokens to get the message
+    const message = extractMessageFromReminderRest(rest, timeExpr.display);
+    if (!message) continue;
+
+    return {
+      type: 'SET_REMINDER',
+      message,
+      timeDisplay: timeExpr.display,
+      triggerMs: timeExpr.date.getTime(),
+    };
   }
+  return null;
+}
 
+function extractMessageFromReminderRest(rest: string, _display: string): string {
+  // Strip time keywords: "at 7 pm", "in 30 minutes", "tomorrow at 8 am", etc.
+  let msg = rest
+    .replace(/\s+(?:at|in|for|by)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?/i, '')
+    .replace(/\s+(?:tomorrow|tonight|today|noon|midnight)\b/i, '')
+    .replace(/\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i, '')
+    .replace(/\s+in\s+\d+\s+(?:hours?|minutes?|seconds?)\b/i, '')
+    .trim();
+  return msg.length >= 2 ? msg : '';
+}
+
+function tryListReminders(c: string): ParsedCommand | null {
+  return REMINDER_LIST_KW.some((kw) => c.includes(kw)) ? { type: 'LIST_REMINDERS' } : null;
+}
+
+function tryDeleteReminder(c: string): ParsedCommand | null {
+  return REMINDER_DELETE_KW.some((kw) => c.includes(kw)) ? { type: 'DELETE_REMINDER' } : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// New parse passes — Calendar
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function tryCreateEvent(c: string): ParsedCommand | null {
+  for (const verb of EVENT_CREATE_VERBS) {
+    const m = c.match(buildVP(verb));
+    if (!m) continue;
+    const rest = m[1].trim(); // e.g. "tomorrow at 10 am", "physics test on friday"
+
+    const timeExpr = parseAbsoluteTime(rest);
+    if (!timeExpr) continue;
+
+    // Extract title: remove time tokens
+    let title = rest
+      .replace(/\s*(?:at|on)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?/i, '')
+      .replace(/\b(tomorrow|today|tonight|noon|midnight)\b/i, '')
+      .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i, '')
+      .trim();
+
+    if (!title) title = 'Meeting';
+
+    // Capitalise first letter
+    title = title.charAt(0).toUpperCase() + title.slice(1);
+
+    const startMs  = timeExpr.date.getTime();
+    const endMs    = startMs + 60 * 60 * 1_000; // default 1-hour event
+
+    return { type: 'CREATE_EVENT', title, timeDisplay: timeExpr.display, startMs, endMs };
+  }
+  return null;
+}
+
+function tryListEvents(c: string): ParsedCommand | null {
+  return EVENT_LIST_KW.some((kw) => c.includes(kw)) ? { type: 'LIST_EVENTS' } : null;
+}
+
+function tryDeleteEvent(c: string): ParsedCommand | null {
+  return EVENT_DELETE_KW.some((kw) => c.includes(kw)) ? { type: 'DELETE_EVENT' } : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function normalise(text: string): string {
+  let s = text.toLowerCase().replace(/[.,!?'"]/g, '').replace(/\s+/g, ' ').trim();
+  for (const prefix of POLITE_PREFIXES) s = s.replace(prefix, '');
   return s;
 }
 
-/** Build a regex that matches "^<verb> <rest>$". Verb spaces become \s+. */
-function buildVerbPattern(verb: string): RegExp {
-  const escaped = verb.replace(/\s+/g, '\\s+');
-  return new RegExp(`^${escaped}\\s+(.+)$`);
+function buildVP(verb: string): RegExp {
+  return new RegExp(`^${verb.replace(/\s+/g, '\\s+')}\\s+(.+)$`);
 }
 
-/**
- * Look up an app in the registry by keyword.
- * Priority: exact match → candidate contains keyword → keyword contains candidate.
- */
 function findApp(candidate: string): AppDefinition | undefined {
-  // Pass 1: exact
-  for (const app of APP_REGISTRY) {
-    if (app.keywords.some((kw) => kw === candidate)) return app;
-  }
-  // Pass 2: candidate ⊇ keyword
-  for (const app of APP_REGISTRY) {
-    if (app.keywords.some((kw) => candidate.includes(kw))) return app;
-  }
-  // Pass 3: keyword ⊇ candidate
-  for (const app of APP_REGISTRY) {
-    if (app.keywords.some((kw) => kw.includes(candidate))) return app;
-  }
+  for (const app of APP_REGISTRY) { if (app.keywords.some((kw) => kw === candidate)) return app; }
+  for (const app of APP_REGISTRY) { if (app.keywords.some((kw) => candidate.includes(kw))) return app; }
+  for (const app of APP_REGISTRY) { if (app.keywords.some((kw) => kw.includes(candidate))) return app; }
   return undefined;
 }
 
-/**
- * Try to split a remainder string (after the SMS verb) into a contact name
- * and an inline message using known separator patterns.
- *
- * e.g. "mom saying i'll be late" → { contactName: "mom", message: "i'll be late" }
- *      "rahul: meet me at 5 pm"  → { contactName: "rahul", message: "meet me at 5 pm" }
- *
- * Returns null if no separator is found.
- */
-function extractInlineMessage(
-  remainder: string,
-): { contactName: string; message: string } | null {
-  for (const pattern of INLINE_MSG_PATTERNS) {
-    const m = remainder.match(pattern);
+function extractInlineMsg(rest: string): { contactName: string; message: string } | null {
+  for (const pat of INLINE_MSG_PAT) {
+    const m = rest.match(pat);
     if (!m) continue;
-    const contactName = m[1].trim().replace(FILLER_WORDS, '').trim();
-    const message     = m[2].trim();
-    if (contactName.length >= 2 && message.length >= 1) {
-      return { contactName, message };
-    }
+    const name = m[1].trim().replace(FILLER_WORDS, '').trim();
+    const msg  = m[2].trim();
+    if (name.length >= 2 && msg.length >= 1) return { contactName: name, message: msg };
   }
   return null;
 }

@@ -1,0 +1,2 @@
+- [Vedra duplicate-route crash](vedra-route-crash.md) — removing app/(tabs) fixed startup crash; root app/index.tsx is the single screen
+- [Vedra v0.5 architecture](vedra-architecture.md) — new feature modules, command parser structure, and key platform decisions

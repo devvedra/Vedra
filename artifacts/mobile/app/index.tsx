@@ -1,30 +1,9 @@
 /**
- * Vedra — Voice Screen (v0.3)
+ * Vedra — Voice Screen (v0.5)
  *
- * Extends v0.2 with offline voice-controlled phone calling.
+ * Extends v0.3 with: Alarms, Timers, Stopwatch, Reminders, Calendar Events.
  *
- * ── Command flow ──────────────────────────────────────────────────────────────
- *
- *   idle → tap mic → listening → speech captured → result
- *     │
- *     ├─ OPEN_APP command  → launch app via intent  → CommandFeedback
- *     │
- *     ├─ CALL_CONTACT cmd  → search contacts
- *     │     ├─ 0 matches   → "I couldn't find that contact"
- *     │     ├─ 1 match     → request CALL_PHONE → initiateCall
- *     │     └─ 2+ matches  → show contact picker → user taps → initiateCall
- *     │
- *     └─ No command        → "I heard: <text>"
- *
- * ── Modules used ─────────────────────────────────────────────────────────────
- *
- *  Voice:          useSpeechRecognition, useTextToSpeech
- *  CommandParser:  parseCommand  (utils/commandParser)
- *  AppLauncher:    launchApp     (utils/appLauncher)
- *  Contacts:       findContactsByName, requestContactsPermission (utils/contactsManager)
- *  PhoneCall:      initiateCall  (utils/phoneCall)
- *  UI:             MicButton, ListeningWave, StatusText,
- *                  TranscriptCard, CommandFeedback, CallFeedback
+ * All new features work 100% offline using Android's official APIs.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -39,12 +18,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
-// ── Hooks ────────────────────────────────────────────────────────────────────
+// ── Hooks ─────────────────────────────────────────────────────────────────────
 import { useColors } from '@/hooks/useColors';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useTextToSpeech } from '@/hooks/useTextToSpeech';
+import { useTimerManager } from '@/hooks/useTimerManager';
+import { useStopwatch } from '@/hooks/useStopwatch';
 
-// ── Utilities ────────────────────────────────────────────────────────────────
+// ── Utilities ─────────────────────────────────────────────────────────────────
 import { parseCommand } from '@/utils/commandParser';
 import { launchApp } from '@/utils/appLauncher';
 import {
@@ -53,6 +34,12 @@ import {
   type ContactMatch,
 } from '@/utils/contactsManager';
 import { initiateCall } from '@/utils/phoneCall';
+import { sendSms, requestSmsPermission } from '@/utils/smsManager';
+import { setAlarm, cancelAlarm, listAlarms } from '@/utils/alarmManager';
+import { cancelTimer, queryTimer } from '@/utils/timerManager';
+import { createReminder, listReminders, deleteReminder } from '@/utils/reminderManager';
+import { createCalendarEvent, listTodayEvents, deleteCalendarEvent } from '@/utils/calendarManager';
+import { formatElapsed } from '@/utils/timeParser';
 
 // ── Components ────────────────────────────────────────────────────────────────
 import MicButton from '@/components/MicButton';
@@ -61,13 +48,26 @@ import StatusText from '@/components/StatusText';
 import TranscriptCard from '@/components/TranscriptCard';
 import CommandFeedback, { type FeedbackState } from '@/components/CommandFeedback';
 import CallFeedback, { type CallFeedbackState } from '@/components/CallFeedback';
+import SmsFeedback, { type SmsFeedbackState } from '@/components/SmsFeedback';
+import AlarmFeedback, { type AlarmFeedbackState } from '@/components/AlarmFeedback';
+import TimerDisplay from '@/components/TimerDisplay';
+import StopwatchDisplay from '@/components/StopwatchDisplay';
+import ReminderFeedback, { type ReminderFeedbackState } from '@/components/ReminderFeedback';
+import CalendarFeedback, { type CalendarFeedbackState } from '@/components/CalendarFeedback';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Which feedback panel is currently active. */
-type ActivePanel = 'none' | 'open_app' | 'call';
+type ActivePanel =
+  | 'none'
+  | 'open_app'
+  | 'call'
+  | 'sms'
+  | 'alarm'
+  | 'timer_result'
+  | 'reminder'
+  | 'calendar';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Component
@@ -89,58 +89,88 @@ export default function VoiceScreen() {
 
   const { speak, stop: stopSpeaking } = useTextToSpeech();
 
+  // ── Timer + Stopwatch hooks ────────────────────────────────────────────────
+  const timerManager = useTimerManager(
+    useCallback((display: string) => {
+      speak(`Your ${display} timer is done!`);
+    }, [speak]),
+  );
+
+  const stopwatch = useStopwatch();
+
   // ── Feedback panels ────────────────────────────────────────────────────────
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
-  const [appFeedback, setAppFeedback] = useState<FeedbackState>({ phase: 'none' });
-  const [callFeedback, setCallFeedback] = useState<CallFeedbackState>({ phase: 'none' });
+  const [appFeedback,     setAppFeedback]     = useState<FeedbackState>({ phase: 'none' });
+  const [callFeedback,    setCallFeedback]    = useState<CallFeedbackState>({ phase: 'none' });
+  const [smsFeedback,     setSmsFeedback]     = useState<SmsFeedbackState>({ phase: 'none' });
+  const [alarmFeedback,   setAlarmFeedback]   = useState<AlarmFeedbackState>({ phase: 'none' });
+  const [reminderFeedback,setReminderFeedback]= useState<ReminderFeedbackState>({ phase: 'none' });
+  const [calendarFeedback,setCalendarFeedback]= useState<CalendarFeedbackState>({ phase: 'none' });
 
-  // Prevent double-processing in React strict-mode double invocations
+  // Prevent double-processing in React strict-mode
   const lastProcessed = useRef<string>('');
 
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ── "Awaiting SMS message" state ───────────────────────────────────────────
+  const pendingSmsRef = useRef<{
+    contactName: string;
+    contact: ContactMatch;
+    transcript: string;
+  } | null>(null);
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Core: process voice result
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
 
   useEffect(() => {
     if (voiceState !== 'result' || !transcript) return;
     if (transcript === lastProcessed.current) return;
     lastProcessed.current = transcript;
 
+    // ── SMS message body mode ──────────────────────────────────────────────
+    if (pendingSmsRef.current) {
+      const { contactName, contact, transcript: raw } = pendingSmsRef.current;
+      pendingSmsRef.current = null;
+      handleSmsMessage(raw, contactName, contact, transcript);
+      return;
+    }
+
     const command = parseCommand(transcript);
 
     if (!command) {
-      // ── Unrecognised — generic fallback ─────────────────────────────────
       setActivePanel('none');
       speak(`I heard: ${transcript}`);
       return;
     }
 
-    if (command.type === 'OPEN_APP') {
-      handleOpenApp(transcript, command.app);
-    } else if (command.type === 'CALL_CONTACT') {
-      handleCallContact(transcript, command.contactName);
-    } else {
-      // SEND_SMS and any future types — fall back gracefully so the app
-      // doesn't silently get stuck in 'result' state.
-      setActivePanel('none');
-      speak(`I heard: ${transcript}`);
+    switch (command.type) {
+      case 'OPEN_APP':     handleOpenApp(transcript, command.app);                         break;
+      case 'CALL_CONTACT': handleCallContact(transcript, command.contactName);             break;
+      case 'SEND_SMS':     handleSendSms(transcript, command.contactName, command.message);break;
+      case 'SET_ALARM':    handleSetAlarm(command.hour, command.minute, command.timeDisplay);break;
+      case 'CANCEL_ALARM': handleCancelAlarm(command.timeDisplay);                         break;
+      case 'LIST_ALARMS':  handleListAlarms();                                             break;
+      case 'START_TIMER':  handleStartTimer(command.totalMs, command.durationDisplay);     break;
+      case 'CANCEL_TIMER': handleCancelTimerCmd();                                         break;
+      case 'QUERY_TIMER':  handleQueryTimer();                                             break;
+      case 'STOPWATCH':    handleStopwatch(command.action);                                break;
+      case 'SET_REMINDER': handleSetReminder(command.message, command.timeDisplay, command.triggerMs); break;
+      case 'LIST_REMINDERS': handleListReminders();                                        break;
+      case 'DELETE_REMINDER': handleDeleteReminder();                                      break;
+      case 'CREATE_EVENT': handleCreateEvent(command.title, command.timeDisplay, command.startMs, command.endMs); break;
+      case 'LIST_EVENTS':  handleListEvents();                                             break;
+      case 'DELETE_EVENT': handleDeleteEvent();                                            break;
     }
   }, [voiceState, transcript]);
 
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
   // OPEN_APP handler
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  async function handleOpenApp(
-    raw: string,
-    app: Parameters<typeof launchApp>[0],
-  ) {
+  async function handleOpenApp(raw: string, app: Parameters<typeof launchApp>[0]) {
     setActivePanel('open_app');
     setAppFeedback({ phase: 'launching', transcript: raw, appName: app.displayName });
     speak(`Opening ${app.displayName}`);
-
     const result = await launchApp(app);
-
     if (result.success) {
       setAppFeedback({ phase: 'success', transcript: raw, appName: app.displayName });
     } else {
@@ -149,83 +179,55 @@ export default function VoiceScreen() {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
   // CALL_CONTACT handler
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
 
   async function handleCallContact(raw: string, contactName: string) {
     setActivePanel('call');
     setCallFeedback({ phase: 'searching', transcript: raw, contactName });
 
-    // 1. Request contacts permission
     const hasContacts = await requestContactsPermission();
     if (!hasContacts) {
       speak("I need access to your contacts to make calls.");
-      setCallFeedback({
-        phase: 'contacts_error',
-        transcript: raw,
-        contactName,
-        reason: 'Contacts permission denied. Please grant it in Settings.',
-      });
+      setCallFeedback({ phase: 'contacts_error', transcript: raw, contactName, reason: 'Permission denied.' });
       return;
     }
 
-    // 2. Search for contacts
     let matches: ContactMatch[];
-    try {
-      matches = await findContactsByName(contactName);
-    } catch {
+    try { matches = await findContactsByName(contactName); }
+    catch {
       speak("I couldn't access your contacts.");
-      setCallFeedback({
-        phase: 'contacts_error',
-        transcript: raw,
-        contactName,
-        reason: 'Failed to read contacts. Please try again.',
-      });
+      setCallFeedback({ phase: 'contacts_error', transcript: raw, contactName, reason: 'Failed to read contacts.' });
       return;
     }
 
-    // 3. Handle results
     if (matches.length === 0) {
       speak(`I couldn't find ${contactName} in your contacts.`);
       setCallFeedback({ phase: 'not_found', transcript: raw, contactName });
     } else if (matches.length === 1) {
       await placeCall(raw, contactName, matches[0]);
     } else {
-      // Multiple matches — show picker
-      speak(`I found ${matches.length} contacts named ${contactName}. Please tap the one you want to call.`);
+      speak(`I found ${matches.length} contacts. Please tap the one you want to call.`);
       setCallFeedback({ phase: 'multiple_found', transcript: raw, contactName, contacts: matches });
     }
   }
-
-  // ═════════════════════════════════════════════════════════════════════════════
-  // Shared: place the actual call
-  // ═════════════════════════════════════════════════════════════════════════════
 
   const placeCall = useCallback(
     async (raw: string, contactName: string, contact: ContactMatch) => {
       setCallFeedback({ phase: 'calling', transcript: raw, contactName, contact });
       speak(`Calling ${contact.displayName}.`);
-
       const result = await initiateCall(contact.phoneNumber);
-
       if (result.success) {
-        setCallFeedback({
-          phase: 'call_started',
-          transcript: raw,
-          contactName,
-          contact,
-          method: result.method,
-        });
+        setCallFeedback({ phase: 'call_started', transcript: raw, contactName, contact, method: result.method });
       } else {
-        speak("I couldn't place the call. Please try again.");
+        speak("I couldn't place the call.");
         setCallFeedback({ phase: 'call_failed', transcript: raw, contactName, contact });
       }
     },
     [speak],
   );
 
-  // Called when the user taps a contact in the multi-match picker
   const handleContactSelected = useCallback(
     (contact: ContactMatch) => {
       if (callFeedback.phase !== 'multiple_found') return;
@@ -235,23 +237,278 @@ export default function VoiceScreen() {
     [callFeedback, placeCall],
   );
 
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SEND_SMS handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleSendSms(raw: string, contactName: string, message?: string) {
+    setActivePanel('sms');
+    setSmsFeedback({ phase: 'searching', transcript: raw, contactName });
+
+    const hasContacts = await requestContactsPermission();
+    if (!hasContacts) {
+      speak("I need access to your contacts to send messages.");
+      setSmsFeedback({ phase: 'contacts_error', transcript: raw, contactName, reason: 'Permission denied.' });
+      return;
+    }
+
+    let matches: ContactMatch[];
+    try { matches = await findContactsByName(contactName); }
+    catch {
+      setSmsFeedback({ phase: 'contacts_error', transcript: raw, contactName, reason: 'Failed to read contacts.' });
+      return;
+    }
+
+    if (matches.length === 0) {
+      speak(`I couldn't find ${contactName} in your contacts.`);
+      setSmsFeedback({ phase: 'not_found', transcript: raw, contactName });
+      return;
+    }
+
+    const contact = matches.length === 1 ? matches[0] : matches[0]; // pick first for simplicity
+
+    if (matches.length > 1) {
+      setSmsFeedback({ phase: 'multiple_found', transcript: raw, contactName, contacts: matches });
+      speak(`I found multiple contacts. Sending to ${matches[0].displayName}.`);
+    }
+
+    if (!message) {
+      // Ask user to speak the message
+      pendingSmsRef.current = { contactName, contact, transcript: raw };
+      speak(`What would you like to say to ${contact.displayName}?`);
+      setSmsFeedback({ phase: 'awaiting_message', transcript: raw, contactName, contact });
+      setTimeout(() => startListening(), 2000);
+      return;
+    }
+
+    await sendSmsToContact(raw, contactName, contact, message);
+  }
+
+  async function handleSmsMessage(raw: string, contactName: string, contact: ContactMatch, message: string) {
+    setSmsFeedback({ phase: 'confirming', transcript: raw, contactName, contact, message });
+    speak(`You said: ${message}. Sending now.`);
+    await sendSmsToContact(raw, contactName, contact, message);
+  }
+
+  async function sendSmsToContact(raw: string, contactName: string, contact: ContactMatch, message: string) {
+    setSmsFeedback({ phase: 'sending', transcript: raw, contactName, contact, message });
+
+    await requestSmsPermission();
+    const result = await sendSms(contact.phoneNumber, message);
+
+    if (result.success) {
+      speak(`Message sent to ${contact.displayName}.`);
+      setSmsFeedback({ phase: 'sent', transcript: raw, contactName, contact, message });
+    } else {
+      speak("I couldn't send the message.");
+      setSmsFeedback({ phase: 'failed', transcript: raw, contactName, contact, message, reason: result.message });
+    }
+  }
+
+  const handleSmsContactSelected = useCallback(
+    (contact: ContactMatch) => {
+      if (smsFeedback.phase !== 'multiple_found') return;
+      const { transcript: raw, contactName } = smsFeedback;
+      pendingSmsRef.current = { contactName, contact, transcript: raw };
+      speak(`What would you like to say to ${contact.displayName}?`);
+      setSmsFeedback({ phase: 'awaiting_message', transcript: raw, contactName, contact });
+      setTimeout(() => startListening(), 2000);
+    },
+    [smsFeedback, speak, startListening],
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ALARM handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleSetAlarm(hour: number, minute: number, timeDisplay: string) {
+    setActivePanel('alarm');
+    setAlarmFeedback({ phase: 'setting' });
+    speak(`Setting alarm for ${timeDisplay}.`);
+    const result = await setAlarm(hour, minute);
+    if (result.success && result.alarm) {
+      setAlarmFeedback({ phase: 'set', alarm: result.alarm });
+    } else {
+      speak("I couldn't set the alarm.");
+      setAlarmFeedback({ phase: 'failed', message: result.message });
+    }
+  }
+
+  async function handleCancelAlarm(timeDisplay?: string) {
+    setActivePanel('alarm');
+    const result = await cancelAlarm();
+    if (result.success && result.alarm) {
+      speak(result.message);
+      setAlarmFeedback({ phase: 'cancelled', alarm: result.alarm });
+    } else {
+      speak(result.message);
+      setAlarmFeedback({ phase: 'cancel_failed', message: result.message });
+    }
+  }
+
+  async function handleListAlarms() {
+    setActivePanel('alarm');
+    const alarms = await listAlarms();
+    if (alarms.length === 0) {
+      speak("You have no alarms set.");
+    } else {
+      speak(`You have ${alarms.length} alarm${alarms.length !== 1 ? 's' : ''}: ${alarms.map(a => a.display).join(', ')}.`);
+    }
+    setAlarmFeedback({ phase: 'list', alarms });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIMER handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleStartTimer(totalMs: number, durationDisplay: string) {
+    const result = await timerManager.startNewTimer(totalMs, durationDisplay);
+    speak(`${durationDisplay} timer started.`);
+    // The TimerDisplay component shows the countdown; no panel needed
+    setActivePanel('none');
+  }
+
+  async function handleCancelTimerCmd() {
+    const result = await timerManager.cancelActiveTimer();
+    speak(result.message);
+    setActivePanel('timer_result');
+    setAlarmFeedback({ phase: 'none' }); // just surface the message via TTS
+  }
+
+  async function handleQueryTimer() {
+    const { message } = await queryTimer();
+    speak(message);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STOPWATCH handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function handleStopwatch(action: 'start' | 'pause' | 'resume' | 'stop' | 'reset' | 'query') {
+    if (action === 'query') {
+      const ms = stopwatch.state.elapsedMs;
+      const display = formatElapsed(ms);
+      if (stopwatch.state.status === 'idle' && ms === 0) {
+        speak("The stopwatch is not running.");
+      } else {
+        speak(`Elapsed time: ${display}.`);
+      }
+      return;
+    }
+    const result = stopwatch.dispatch(action);
+    speak(result.message);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // REMINDER handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleSetReminder(message: string, timeDisplay: string, triggerMs: number) {
+    setActivePanel('reminder');
+    setReminderFeedback({ phase: 'setting' });
+    const result = await createReminder(message, triggerMs, timeDisplay);
+    if (result.success && result.reminder) {
+      speak(`Reminder set for ${timeDisplay}: ${message}.`);
+      setReminderFeedback({ phase: 'set', reminder: result.reminder });
+    } else {
+      speak(result.message);
+      setReminderFeedback({ phase: 'failed', message: result.message });
+    }
+  }
+
+  async function handleListReminders() {
+    setActivePanel('reminder');
+    const result = await listReminders();
+    speak(result.message);
+    setReminderFeedback({ phase: 'list', reminders: result.reminders ?? [] });
+  }
+
+  async function handleDeleteReminder() {
+    setActivePanel('reminder');
+    const result = await deleteReminder();
+    speak(result.message);
+    if (result.success && result.reminder) {
+      setReminderFeedback({ phase: 'deleted', reminder: result.reminder });
+    } else {
+      setReminderFeedback({ phase: 'delete_failed', message: result.message });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CALENDAR handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleCreateEvent(title: string, timeDisplay: string, startMs: number, endMs: number) {
+    setActivePanel('calendar');
+    setCalendarFeedback({ phase: 'creating' });
+    const result = await createCalendarEvent(title, startMs, endMs, timeDisplay);
+    if (result.success && result.event) {
+      speak(`${title} added to your calendar for ${timeDisplay}.`);
+      setCalendarFeedback({ phase: 'created', event: result.event });
+    } else {
+      speak(result.message);
+      setCalendarFeedback({ phase: 'failed', message: result.message });
+    }
+  }
+
+  async function handleListEvents() {
+    setActivePanel('calendar');
+    const result = await listTodayEvents();
+    speak(result.message);
+    if (result.success) {
+      setCalendarFeedback({ phase: 'list', events: result.events ?? [] });
+    } else {
+      setCalendarFeedback({ phase: 'list_failed', message: result.message });
+    }
+  }
+
+  async function handleDeleteEvent() {
+    setActivePanel('calendar');
+    const result = await listTodayEvents();
+    if (!result.success || !result.events || result.events.length === 0) {
+      speak("No events to delete today.");
+      setCalendarFeedback({ phase: 'list_failed', message: 'No events found today.' });
+      return;
+    }
+    if (result.events.length === 1) {
+      // Delete the only event
+      await doDeleteEvent(result.events[0]);
+    } else {
+      speak("Which event would you like to delete? Tap it below.");
+      setCalendarFeedback({ phase: 'delete_confirm', events: result.events });
+    }
+  }
+
+  const doDeleteEvent = useCallback(async (event: import('@/utils/calendarManager').CalendarEventInfo) => {
+    const del = await deleteCalendarEvent(event.id, event.title);
+    if (del.success) {
+      speak(del.message);
+      setCalendarFeedback({ phase: 'deleted', title: event.title });
+    } else {
+      speak(del.message);
+      setCalendarFeedback({ phase: 'delete_failed', message: del.message });
+    }
+  }, [speak]);
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Mic button handler
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
 
   const handleMicPress = useCallback(async () => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     if (voiceState === 'listening') {
       await stopListening();
     } else if (voiceState === 'result' || voiceState === 'error') {
-      // Reset everything and start fresh
       lastProcessed.current = '';
       setActivePanel('none');
       setAppFeedback({ phase: 'none' });
       setCallFeedback({ phase: 'none' });
+      setSmsFeedback({ phase: 'none' });
+      setAlarmFeedback({ phase: 'none' });
+      setReminderFeedback({ phase: 'none' });
+      setCalendarFeedback({ phase: 'none' });
+      pendingSmsRef.current = null;
       stopSpeaking();
       resetVoice();
       setTimeout(startListening, 120);
@@ -260,23 +517,36 @@ export default function VoiceScreen() {
       setActivePanel('none');
       setAppFeedback({ phase: 'none' });
       setCallFeedback({ phase: 'none' });
+      setSmsFeedback({ phase: 'none' });
+      setAlarmFeedback({ phase: 'none' });
+      setReminderFeedback({ phase: 'none' });
+      setCalendarFeedback({ phase: 'none' });
+      pendingSmsRef.current = null;
       await startListening();
+    } else if (voiceState === 'processing') {
+      // Do nothing — wait for result
     }
   }, [voiceState, startListening, stopListening, stopSpeaking, resetVoice]);
 
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
   // Render helpers
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  const showLiveTranscript =
-    (voiceState === 'listening' || voiceState === 'processing') &&
-    !!partialTranscript;
+  const showLiveTranscript = (voiceState === 'listening' || voiceState === 'processing') && !!partialTranscript;
+  const showHint = activePanel === 'none' && !showLiveTranscript && timerManager.state.isIdle && stopwatch.state.status === 'idle';
 
-  const showHint = activePanel === 'none' && !showLiveTranscript;
+  const HINTS = [
+    '"Set alarm for 6 AM"',
+    '"Start a 10 minute timer"',
+    '"Start stopwatch"',
+    '"Remind me to study at 7 PM"',
+    '"Call Mom"  ·  "Open WhatsApp"',
+    '"Show my calendar"',
+  ];
 
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
   // Render
-  // ═════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
 
   return (
     <View
@@ -291,7 +561,7 @@ export default function VoiceScreen() {
     >
       <StatusBar barStyle="light-content" backgroundColor={colors.background} />
 
-      {/* ── Header ── */}
+      {/* ── Header ────────────────────────────────────────────────────────── */}
       <View style={styles.header}>
         <Text style={[styles.appName, { color: colors.foreground }]}>VEDRA</Text>
         <Text style={[styles.appTagline, { color: colors.mutedForeground }]}>
@@ -299,52 +569,74 @@ export default function VoiceScreen() {
         </Text>
       </View>
 
-      {/* ── Centre: mic + wave ── */}
+      {/* ── Centre: mic + wave ─────────────────────────────────────────────── */}
       <View style={styles.centre}>
         <View style={styles.waveContainer}>
           <ListeningWave isListening={voiceState === 'listening'} />
         </View>
-
         <MicButton state={voiceState} onPress={handleMicPress} />
-
         <View style={styles.statusContainer}>
           <StatusText state={voiceState} />
         </View>
       </View>
 
-      {/* ── Bottom: feedback panels ── */}
+      {/* ── Bottom: persistent + feedback panels ───────────────────────────── */}
       <ScrollView
         style={styles.bottomScroll}
         contentContainerStyle={styles.bottomContent}
         showsVerticalScrollIndicator={false}
-        scrollEnabled={callFeedback.phase === 'multiple_found'}
+        scrollEnabled
         keyboardShouldPersistTaps="handled"
       >
-        {/* Live partial transcript while listening */}
+        {/* ── Always-visible: Timer countdown ── */}
+        <TimerDisplay
+          state={timerManager.state}
+          onCancel={timerManager.cancelActiveTimer}
+          onDismiss={timerManager.dismissCompleted}
+        />
+
+        {/* ── Always-visible: Stopwatch ── */}
+        <StopwatchDisplay
+          state={stopwatch.state}
+          onAction={stopwatch.dispatch}
+        />
+
+        {/* ── Live partial transcript ── */}
         {showLiveTranscript && (
           <TranscriptCard transcript={partialTranscript} isSpeaking={false} />
         )}
 
-        {/* App-open feedback (OPEN_APP) */}
-        {activePanel === 'open_app' && (
-          <CommandFeedback state={appFeedback} />
-        )}
+        {/* ── App-open feedback ── */}
+        {activePanel === 'open_app' && <CommandFeedback state={appFeedback} />}
 
-        {/* Call feedback (CALL_CONTACT) */}
+        {/* ── Call feedback ── */}
         {activePanel === 'call' && (
-          <CallFeedback
-            state={callFeedback}
-            onContactSelected={handleContactSelected}
-          />
+          <CallFeedback state={callFeedback} onContactSelected={handleContactSelected} />
         )}
 
-        {/* Idle hint */}
+        {/* ── SMS feedback ── */}
+        {activePanel === 'sms' && (
+          <SmsFeedback state={smsFeedback} onContactSelected={handleSmsContactSelected} />
+        )}
+
+        {/* ── Alarm feedback ── */}
+        {activePanel === 'alarm' && <AlarmFeedback state={alarmFeedback} />}
+
+        {/* ── Reminder feedback ── */}
+        {activePanel === 'reminder' && <ReminderFeedback state={reminderFeedback} />}
+
+        {/* ── Calendar feedback ── */}
+        {activePanel === 'calendar' && (
+          <CalendarFeedback state={calendarFeedback} onDeleteEvent={doDeleteEvent} />
+        )}
+
+        {/* ── Idle hints ── */}
         {showHint && (
           <View style={styles.emptyCard}>
             <Text style={[styles.hint, { color: colors.mutedForeground }]}>
               {voiceState === 'unavailable'
                 ? 'Build the APK to enable voice recognition'
-                : 'Try: "Call Mom" · "Open WhatsApp" · "Launch Chrome"'}
+                : HINTS.map((h, i) => (i === HINTS.length - 1 ? h : `${h}\n`)).join('')}
             </Text>
           </View>
         )}
@@ -361,7 +653,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 24 },
 
   header: { alignItems: 'center', paddingTop: 24, gap: 6 },
-  appName: { fontSize: 28, fontFamily: 'Inter_700Bold', letterSpacing: 8 },
+  appName:    { fontSize: 28, fontFamily: 'Inter_700Bold', letterSpacing: 8 },
   appTagline: { fontSize: 13, fontFamily: 'Inter_400Regular', letterSpacing: 0.5 },
 
   centre: {
@@ -371,12 +663,12 @@ const styles = StyleSheet.create({
     gap: 8,
     minHeight: 280,
   },
-  waveContainer: { height: 52, justifyContent: 'center' },
+  waveContainer:   { height: 52, justifyContent: 'center' },
   statusContainer: { marginTop: 16, height: 24, justifyContent: 'center' },
 
-  bottomScroll: { flexShrink: 1 },
+  bottomScroll:  { flexShrink: 1 },
   bottomContent: { paddingBottom: 28, flexGrow: 1, justifyContent: 'flex-end' },
 
   emptyCard: { paddingVertical: 20, alignItems: 'center' },
-  hint: { fontSize: 13, fontFamily: 'Inter_400Regular', textAlign: 'center', lineHeight: 20 },
+  hint: { fontSize: 13, fontFamily: 'Inter_400Regular', textAlign: 'center', lineHeight: 22 },
 });
