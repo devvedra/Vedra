@@ -153,8 +153,7 @@ export default function CommandFeedback({ state }: CommandFeedbackProps) {
 
   if (!visible) return null;
 
-  const transcript =
-    state.phase !== 'none' ? state.transcript : '';
+  const transcript = (state as any).transcript ?? '';
 
   return (
     <Animated.View

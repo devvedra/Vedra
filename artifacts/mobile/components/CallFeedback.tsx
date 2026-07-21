@@ -157,7 +157,7 @@ function PhaseContent({
             value={
               <Row>
                 <Feather name="x-circle" size={15} color={colors.destructive} />
-                <StatusText color={colors.destructive}>No contact matched "{state.contactName}"</StatusText>
+                <StatusText color={colors.destructive}>{`No contact matched "${state.contactName}"`}</StatusText>
               </Row>
             }
           />

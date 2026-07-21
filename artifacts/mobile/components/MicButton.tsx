@@ -158,8 +158,8 @@ export default function MicButton({ state, onPress }: MicButtonProps) {
     if (isProcessing) {
       breathScale.value = withRepeat(
         withSequence(
-          withTiming(1.08, { duration: 800, easing: Easing.inOut(Easing.sine) }),
-          withTiming(1.0, { duration: 800, easing: Easing.inOut(Easing.sine) }),
+          withTiming(1.08, { duration: 800, easing: Easing.inOut(Easing.sin) }),
+          withTiming(1.0, { duration: 800, easing: Easing.inOut(Easing.sin) }),
         ),
         -1,
         false,

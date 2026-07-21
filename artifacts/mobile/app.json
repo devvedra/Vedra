@@ -25,7 +25,8 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.INTERNET",
         "android.permission.CALL_PHONE",
-        "android.permission.READ_CONTACTS"
+        "android.permission.READ_CONTACTS",
+        "android.permission.SEND_SMS"
       ]
     },
     "web": {

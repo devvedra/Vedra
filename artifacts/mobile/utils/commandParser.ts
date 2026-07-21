@@ -1,5 +1,5 @@
 /**
- * commandParser.ts — Vedra Command Parser  (v0.3)
+ * commandParser.ts — Vedra Command Parser  (v0.4)
  *
  * Parses free-form voice transcripts into structured commands, entirely
  * offline using string matching. No network calls, no AI services.
@@ -7,12 +7,14 @@
  * ── Supported command types ───────────────────────────────────────────────────
  *
  *  OPEN_APP      — "Open WhatsApp", "Launch Chrome", "Start Calculator"…
- *  CALL_CONTACT  — "Call Mom", "Phone Rahul", "Dial Dad", "Make a call to John"…
+ *  CALL_CONTACT  — "Call Mom", "Phone Rahul", "Dial Dad"…
+ *  SEND_SMS      — "Send SMS to Mom", "Text Rahul", "Tell Dad I'm home"…
+ *                  Optional inline message: "Send SMS to Mom saying I'll be late"
  *
  * ── Extending the parser ─────────────────────────────────────────────────────
  *
- *  To add a new app:    push an AppDefinition into APP_REGISTRY.
- *  To add a new verb:   add a string to OPEN_VERBS or CALL_VERBS.
+ *  To add a new app:      push an AppDefinition into APP_REGISTRY.
+ *  To add a new verb:     add a string to OPEN_VERBS, CALL_VERBS, or SMS_VERBS.
  *  To add a command type: add a union member to ParsedCommand and a new
  *                         parse pass inside parseCommand().
  */
@@ -46,8 +48,9 @@ export type AppDefinition = {
  * Add new union members here to support additional command types.
  */
 export type ParsedCommand =
-  | { type: 'OPEN_APP'; app: AppDefinition }
-  | { type: 'CALL_CONTACT'; contactName: string };
+  | { type: 'OPEN_APP';     app: AppDefinition }
+  | { type: 'CALL_CONTACT'; contactName: string }
+  | { type: 'SEND_SMS';     contactName: string; message?: string };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // App Registry  (OPEN_APP data)
@@ -172,6 +175,25 @@ const CALL_VERBS: string[] = [
 ];
 
 /**
+ * Verbs that precede a contact name in a SEND_SMS command.
+ * Sorted longest-first.
+ * After matching, the remainder is parsed for an optional inline message.
+ */
+const SMS_VERBS: string[] = [
+  'send an sms to',
+  'send a sms to',
+  'send sms to',
+  'send a text message to',
+  'send text message to',
+  'send a text to',
+  'send text to',
+  'send a message to',
+  'send message to',
+  'text',
+  'message',
+];
+
+/**
  * Polite prefixes stripped before verb matching.
  * Order matters: strip longer phrases before shorter ones.
  */
@@ -189,6 +211,29 @@ const POLITE_PREFIXES: RegExp[] = [
 /** Articles / possessives between a verb and the target ("my", "the", "a"…) */
 const FILLER_WORDS = /^(?:my|the|a|an)\s+/;
 
+/**
+ * Patterns that split a contact name from an inline message.
+ * Each captures (contactName, message) as groups 1 and 2.
+ * Sorted longest/most-specific first.
+ */
+const INLINE_MSG_PATTERNS: RegExp[] = [
+  /^(.+?)\s+with\s+the\s+message\s+(.+)$/,
+  /^(.+?)\s+with\s+message\s+(.+)$/,
+  /^(.+?)\s+that\s+says\s+(.+)$/,
+  /^(.+?)\s+saying\s+(.+)$/,
+  /^(.+?)\s*:\s*(.+)$/,
+];
+
+/**
+ * "tell <name> <message>" — first word after "tell" is the contact name,
+ * everything else is the message. Works great for single-word nicknames
+ * (Mom, Dad, Rahul) which covers the vast majority of cases.
+ *
+ * Pattern: tell [optional "that"] <name> <message>
+ * Captures: (name, message)
+ */
+const TELL_PATTERN = /^tell\s+(\S+)\s+(.+)$/;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -197,8 +242,9 @@ const FILLER_WORDS = /^(?:my|the|a|an)\s+/;
  * Parse a raw voice transcript into a typed command.
  *
  * Parsing order:
- *   1. OPEN_APP  (tried first — apps have distinctive names)
+ *   1. OPEN_APP      (tried first — apps have distinctive names)
  *   2. CALL_CONTACT
+ *   3. SEND_SMS
  *
  * Returns null if the transcript matches no known command pattern.
  *
@@ -210,6 +256,7 @@ export function parseCommand(text: string): ParsedCommand | null {
   return (
     tryOpenApp(cleaned) ??
     tryCallContact(cleaned) ??
+    trySendSms(cleaned) ??
     null
   );
 }
@@ -239,12 +286,57 @@ function tryCallContact(cleaned: string): ParsedCommand | null {
     const match = cleaned.match(pattern);
     if (!match) continue;
 
-    // Strip filler words like "my dad" → "dad"
     const contactName = match[1].trim().replace(FILLER_WORDS, '').trim();
     if (contactName.length >= 2) {
       return { type: 'CALL_CONTACT', contactName };
     }
   }
+  return null;
+}
+
+/**
+ * Try to match a SEND_SMS command.
+ *
+ * Two sub-patterns are tried:
+ *   A. "tell <name> <message>"          — special tell verb with implicit message
+ *   B. "<sms-verb> <name> [msg-sep msg]" — standard SMS verbs + optional message
+ *
+ * Returns null on no match.
+ */
+function trySendSms(cleaned: string): ParsedCommand | null {
+  // ── Pattern A: "tell <name> <message>" ─────────────────────────────────────
+  const tellMatch = cleaned.match(TELL_PATTERN);
+  if (tellMatch) {
+    const contactName = tellMatch[1].trim().replace(FILLER_WORDS, '').trim();
+    const message     = tellMatch[2].trim();
+    if (contactName.length >= 2 && message.length >= 1) {
+      return { type: 'SEND_SMS', contactName, message };
+    }
+  }
+
+  // ── Pattern B: SMS verb + contact + optional inline message ─────────────────
+  for (const verb of SMS_VERBS) {
+    const pattern = buildVerbPattern(verb);
+    const match   = cleaned.match(pattern);
+    if (!match) continue;
+
+    const remainder = match[1].trim().replace(FILLER_WORDS, '').trim();
+    if (remainder.length < 2) continue;
+
+    // Try to split remainder into "contactName + message" via separator patterns
+    const extracted = extractInlineMessage(remainder);
+    if (extracted) {
+      return {
+        type: 'SEND_SMS',
+        contactName: extracted.contactName,
+        message: extracted.message,
+      };
+    }
+
+    // No inline message found — remainder is the contact name only
+    return { type: 'SEND_SMS', contactName: remainder };
+  }
+
   return null;
 }
 
@@ -291,4 +383,28 @@ function findApp(candidate: string): AppDefinition | undefined {
     if (app.keywords.some((kw) => kw.includes(candidate))) return app;
   }
   return undefined;
+}
+
+/**
+ * Try to split a remainder string (after the SMS verb) into a contact name
+ * and an inline message using known separator patterns.
+ *
+ * e.g. "mom saying i'll be late" → { contactName: "mom", message: "i'll be late" }
+ *      "rahul: meet me at 5 pm"  → { contactName: "rahul", message: "meet me at 5 pm" }
+ *
+ * Returns null if no separator is found.
+ */
+function extractInlineMessage(
+  remainder: string,
+): { contactName: string; message: string } | null {
+  for (const pattern of INLINE_MSG_PATTERNS) {
+    const m = remainder.match(pattern);
+    if (!m) continue;
+    const contactName = m[1].trim().replace(FILLER_WORDS, '').trim();
+    const message     = m[2].trim();
+    if (contactName.length >= 2 && message.length >= 1) {
+      return { contactName, message };
+    }
+  }
+  return null;
 }

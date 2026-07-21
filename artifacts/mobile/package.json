@@ -12,6 +12,7 @@
   "dependencies": {
     "expo-contacts": "~15.0.11",
     "expo-intent-launcher": "^13.0.8",
+    "expo-sms": "^57.0.1",
     "expo-speech": "^14.0.8"
   },
   "devDependencies": {
