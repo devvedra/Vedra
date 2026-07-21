@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "expo-intent-launcher": "^13.0.8",
     "expo-speech": "^14.0.8"
   },
   "devDependencies": {

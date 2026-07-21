@@ -1,26 +1,34 @@
 /**
- * Vedra — Voice Screen (root screen)
+ * Vedra — Voice Screen (v0.2)
  *
- * This is the entire UI for Vedra v0.1. It wires together:
- *  - useSpeechRecognition — Android SpeechRecognizer via @react-native-voice/voice
- *  - useTextToSpeech     — expo-speech for reading the result aloud
- *  - MicButton           — the large animated microphone button
- *  - ListeningWave       — animated sound-wave bars during listening
- *  - TranscriptCard      — the recognised text displayed in a card
- *  - StatusText          — a one-line description of the current state
+ * Extends v0.1 with offline voice-command parsing and Android app launching.
  *
- * State flow:
- *   idle → tap mic → listening → (speech detected) → processing → result
- *   → TTS reads "I heard: <text>" → tap again → idle
+ * Flow:
+ *   idle → tap mic → listening → speech captured → processing → result
+ *     ├─ command recognised  → launch app → speak "Opening <App>" → show status
+ *     └─ no command detected → speak "I heard: <text>"  → show transcript
+ *
+ * Components wired here:
+ *   MicButton         — large animated microphone button
+ *   ListeningWave     — animated waveform bars while listening
+ *   StatusText        — one-line state description
+ *   TranscriptCard    — live partial-transcript display while listening
+ *   CommandFeedback   — final result card (transcript + command + status)
+ *
+ * Utilities:
+ *   useSpeechRecognition — Android SpeechRecognizer hook
+ *   useTextToSpeech      — expo-speech hook
+ *   parseCommand         — offline command parser (commandParser.ts)
+ *   launchApp            — Android intent launcher (appLauncher.ts)
  */
 
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Platform,
+  StatusBar,
   StyleSheet,
   Text,
   View,
-  StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -28,11 +36,14 @@ import * as Haptics from 'expo-haptics';
 import { useColors } from '@/hooks/useColors';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useTextToSpeech } from '@/hooks/useTextToSpeech';
+import { parseCommand } from '@/utils/commandParser';
+import { launchApp } from '@/utils/appLauncher';
 
 import MicButton from '@/components/MicButton';
 import ListeningWave from '@/components/ListeningWave';
-import TranscriptCard from '@/components/TranscriptCard';
 import StatusText from '@/components/StatusText';
+import TranscriptCard from '@/components/TranscriptCard';
+import CommandFeedback, { type FeedbackState } from '@/components/CommandFeedback';
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -40,50 +51,95 @@ export default function VoiceScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
 
+  // ── Voice recognition ────────────────────────────────────────────────────
   const {
-    state,
+    state: voiceState,
     transcript,
     partialTranscript,
     startListening,
     stopListening,
-    reset,
+    reset: resetVoice,
   } = useSpeechRecognition();
 
+  // ── Text-to-speech ────────────────────────────────────────────────────────
   const { speak, isSpeaking } = useTextToSpeech();
 
-  // ── Auto-trigger TTS when a result arrives ──────────────────────────────
-  useEffect(() => {
-    if (state === 'result' && transcript) {
-      speak(`I heard: ${transcript}`);
-    }
-  }, [state, transcript]);
+  // ── Command feedback state ────────────────────────────────────────────────
+  // Tracks the current phase of command execution so CommandFeedback can
+  // render the correct UI. Reset to 'none' each time the user starts a new
+  // recording session.
+  const [feedback, setFeedback] = useState<FeedbackState>({ phase: 'none' });
 
-  // ── Handle mic button tap ───────────────────────────────────────────────
-  const handleMicPress = async () => {
-    // Haptic feedback for a satisfying tap feel
+  // Prevent the effect from firing twice on strict-mode double invocations
+  const lastProcessedTranscript = useRef<string>('');
+
+  // ── Process result ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (voiceState !== 'result' || !transcript) return;
+    if (transcript === lastProcessedTranscript.current) return;
+    lastProcessedTranscript.current = transcript;
+
+    const command = parseCommand(transcript);
+
+    if (!command) {
+      // ── No command — fall back to generic "I heard…" response ──────────
+      setFeedback({ phase: 'unrecognized', transcript });
+      speak(`I heard: ${transcript}`);
+      return;
+    }
+
+    // ── Command recognised — launch the app ──────────────────────────────
+    const { app } = command;
+
+    // Immediately update UI to "launching" and start speaking
+    setFeedback({ phase: 'launching', transcript, appName: app.displayName });
+    speak(`Opening ${app.displayName}`);
+
+    // Attempt the launch asynchronously
+    launchApp(app).then((result) => {
+      if (result.success) {
+        setFeedback({ phase: 'success', transcript, appName: app.displayName });
+      } else {
+        // App not found or not installed
+        speak("I couldn't find that app.");
+        setFeedback({ phase: 'failed', transcript, appName: app.displayName });
+      }
+    });
+  }, [voiceState, transcript]);
+
+  // ── Mic button handler ────────────────────────────────────────────────────
+  const handleMicPress = useCallback(async () => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
 
-    if (state === 'listening') {
+    if (voiceState === 'listening') {
       // Tap again while listening → stop early
       await stopListening();
-    } else if (state === 'result' || state === 'error') {
-      // Tap after a result → reset and listen again
-      reset();
-      setTimeout(startListening, 100); // small delay so state updates first
-    } else if (state === 'idle') {
+    } else if (voiceState === 'result' || voiceState === 'error') {
+      // Start a new session — clear previous feedback first
+      lastProcessedTranscript.current = '';
+      setFeedback({ phase: 'none' });
+      resetVoice();
+      setTimeout(startListening, 100);
+    } else if (voiceState === 'idle') {
+      lastProcessedTranscript.current = '';
+      setFeedback({ phase: 'none' });
       await startListening();
     }
-    // Other states (processing, permission_denied, unavailable) — do nothing
-  };
+  }, [voiceState, startListening, stopListening, resetVoice]);
 
-  // ── Derive display transcript ───────────────────────────────────────────
-  // Show partial results in real-time while listening
-  const displayTranscript =
-    state === 'result' ? transcript : partialTranscript;
+  // ── Derived display values ────────────────────────────────────────────────
+  // Show live partial transcript while listening; hide once we have a result
+  // (CommandFeedback handles the final display)
+  const showLiveTranscript =
+    (voiceState === 'listening' || voiceState === 'processing') &&
+    !!partialTranscript;
 
-  // ── Render ──────────────────────────────────────────────────────────────
+  const showFeedbackCard = feedback.phase !== 'none';
+  const showHint = !showLiveTranscript && !showFeedbackCard;
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <View
       style={[
@@ -97,7 +153,7 @@ export default function VoiceScreen() {
     >
       <StatusBar barStyle="light-content" backgroundColor={colors.background} />
 
-      {/* ── Top: App identity ── */}
+      {/* ── Header — app identity ── */}
       <View style={styles.header}>
         <Text style={[styles.appName, { color: colors.foreground }]}>
           VEDRA
@@ -107,37 +163,44 @@ export default function VoiceScreen() {
         </Text>
       </View>
 
-      {/* ── Centre: Mic button + wave ── */}
+      {/* ── Centre — mic button area ── */}
       <View style={styles.centre}>
-        {/* Listening wave — visible during active listening */}
+        {/* Waveform: animated bars while listening */}
         <View style={styles.waveContainer}>
-          <ListeningWave isListening={state === 'listening'} />
+          <ListeningWave isListening={voiceState === 'listening'} />
         </View>
 
-        {/* The microphone button */}
-        <MicButton state={state} onPress={handleMicPress} />
+        {/* Primary interaction: the microphone button */}
+        <MicButton state={voiceState} onPress={handleMicPress} />
 
-        {/* Status label below the button */}
+        {/* One-line state description */}
         <View style={styles.statusContainer}>
-          <StatusText state={state} />
+          <StatusText state={voiceState} />
         </View>
       </View>
 
-      {/* ── Bottom: Transcript & help text ── */}
+      {/* ── Bottom — result display ── */}
       <View style={styles.bottom}>
-        {/* Show transcript card when there is recognised or partial text */}
-        {displayTranscript ? (
+        {/* Live partial transcript while the microphone is open */}
+        {showLiveTranscript && (
           <TranscriptCard
-            transcript={displayTranscript}
-            isSpeaking={isSpeaking}
+            transcript={partialTranscript}
+            isSpeaking={false}
           />
-        ) : (
-          /* Placeholder so layout doesn't shift */
+        )}
+
+        {/* Command feedback card: transcript + detected command + status */}
+        {showFeedbackCard && (
+          <CommandFeedback state={feedback} />
+        )}
+
+        {/* Idle hint when nothing has been said yet */}
+        {showHint && (
           <View style={styles.emptyCard}>
             <Text style={[styles.hint, { color: colors.mutedForeground }]}>
-              {state === 'unavailable'
+              {voiceState === 'unavailable'
                 ? 'Build the APK to enable voice recognition'
-                : 'Your words will appear here'}
+                : 'Try: "Open WhatsApp" or "Launch Chrome"'}
             </Text>
           </View>
         )}
@@ -151,7 +214,7 @@ export default function VoiceScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 28,
+    paddingHorizontal: 24,
   },
 
   // ── Header ──
@@ -184,23 +247,24 @@ const styles = StyleSheet.create({
   },
   statusContainer: {
     marginTop: 16,
-    height: 24, // fixed height so layout doesn't jump
+    height: 24,
     justifyContent: 'center',
   },
 
   // ── Bottom ──
   bottom: {
-    paddingBottom: 32,
-    minHeight: 120,
+    paddingBottom: 28,
+    minHeight: 130,
     justifyContent: 'flex-end',
   },
   emptyCard: {
-    paddingVertical: 24,
+    paddingVertical: 20,
     alignItems: 'center',
   },
   hint: {
     fontSize: 13,
     fontFamily: 'Inter_400Regular',
     textAlign: 'center',
+    lineHeight: 20,
   },
 });
