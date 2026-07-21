@@ -1,81 +1,95 @@
 /**
- * StatusText
+ * StatusText — Vedra v0.6 Premium
  *
- * A single line of instructional / state text shown below the mic button.
- * Cross-fades when the state changes so transitions feel smooth rather than
- * jarring.
+ * Pill badge with a glowing dot indicator — cross-fades on state change.
  */
 
 import React, { useEffect } from 'react';
-import { StyleSheet, Text } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
-  withSequence,
+  useSharedValue, useAnimatedStyle,
+  withTiming, withSequence, withRepeat, Easing,
 } from 'react-native-reanimated';
 import { useColors } from '@/hooks/useColors';
 import type { RecognitionState } from '@/hooks/useSpeechRecognition';
 
-// ── Label map ─────────────────────────────────────────────────────────────────
-
-const STATE_LABELS: Record<RecognitionState, string> = {
-  idle: 'Tap to speak',
-  listening: 'Listening…',
-  processing: 'Processing…',
-  result: 'Got it!',
-  error: 'Try again',
-  permission_denied: 'Microphone access denied',
-  unavailable: 'Voice unavailable in preview',
+const LABELS: Record<RecognitionState, string> = {
+  idle:             'Tap to speak',
+  listening:        'Listening',
+  processing:       'Processing',
+  result:           'Got it',
+  error:            'Try again',
+  permission_denied:'Mic access denied',
+  unavailable:      'Preview mode',
 };
 
-// ── Component ─────────────────────────────────────────────────────────────────
-
-interface StatusTextProps {
-  state: RecognitionState;
+function dotColor(state: RecognitionState, colors: ReturnType<typeof useColors>) {
+  if (state === 'listening')   return colors.listeningRing;
+  if (state === 'processing')  return colors.processingRing;
+  if (state === 'error' || state === 'permission_denied') return colors.destructive;
+  if (state === 'result')      return colors.listeningRing;
+  return colors.mutedForeground;
 }
 
-export default function StatusText({ state }: StatusTextProps) {
-  const colors = useColors();
+export default function StatusText({ state }: { state: RecognitionState }) {
+  const colors  = useColors();
   const opacity = useSharedValue(1);
+  const dotPulse = useSharedValue(1);
+  const isActive = state === 'listening' || state === 'processing';
 
-  // Brief cross-fade on state change
   useEffect(() => {
     opacity.value = withSequence(
-      withTiming(0, { duration: 120 }),
-      withTiming(1, { duration: 200 }),
+      withTiming(0, { duration: 100 }),
+      withTiming(1, { duration: 220 }),
     );
   }, [state]);
 
-  const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  useEffect(() => {
+    if (isActive) {
+      dotPulse.value = withRepeat(
+        withSequence(
+          withTiming(1.6, { duration: 600, easing: Easing.inOut(Easing.sin) }),
+          withTiming(1.0, { duration: 600, easing: Easing.inOut(Easing.sin) }),
+        ), -1, false,
+      );
+    } else {
+      dotPulse.value = withTiming(1, { duration: 300 });
+    }
+  }, [isActive]);
 
-  const textColor =
-    state === 'listening'
-      ? colors.listeningRing
-      : state === 'processing'
-        ? colors.processingRing
-        : state === 'error' || state === 'permission_denied'
-          ? colors.destructive
-          : state === 'unavailable'
-            ? colors.mutedForeground
-            : colors.mutedForeground;
+  const wrapStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  const dotStyle  = useAnimatedStyle(() => ({ transform: [{ scale: dotPulse.value }] }));
+
+  const dc = dotColor(state, colors);
+  const textColor = state === 'unavailable' ? colors.mutedForeground : colors.foreground;
 
   return (
-    <Animated.View style={animStyle}>
-      <Text style={[styles.text, { color: textColor }]}>
-        {STATE_LABELS[state]}
-      </Text>
+    <Animated.View style={[styles.pill, { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.07)' }, wrapStyle]}>
+      <Animated.View style={[styles.dot, { backgroundColor: dc }, dotStyle]} />
+      <Text style={[styles.label, { color: textColor }]}>{LABELS[state]}</Text>
     </Animated.View>
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
-  text: {
-    fontSize: 15,
+  pill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 100,
+    borderWidth: 1,
+    gap: 8,
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  label: {
+    fontSize: 13,
     fontFamily: 'Inter_500Medium',
-    letterSpacing: 0.3,
-    textAlign: 'center',
+    letterSpacing: 0.4,
   },
 });

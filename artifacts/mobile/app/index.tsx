@@ -699,9 +699,15 @@ export default function VoiceScreen() {
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <View style={styles.header}>
+        <View style={styles.badgeRow}>
+          <View style={[styles.badge, { backgroundColor: 'rgba(124,58,237,0.18)', borderColor: 'rgba(124,58,237,0.35)' }]}>
+            <View style={[styles.badgeDot, { backgroundColor: colors.accent }]} />
+            <Text style={[styles.badgeText, { color: colors.accent }]}>AI ASSISTANT</Text>
+          </View>
+        </View>
         <Text style={[styles.appName, { color: colors.foreground }]}>VEDRA</Text>
         <Text style={[styles.appTagline, { color: colors.mutedForeground }]}>
-          Your voice assistant
+          Speak naturally. I'll take care of it.
         </Text>
       </View>
 
@@ -791,9 +797,17 @@ export default function VoiceScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 24 },
 
-  header: { alignItems: 'center', paddingTop: 24, gap: 6 },
-  appName:    { fontSize: 28, fontFamily: 'Inter_700Bold', letterSpacing: 8 },
-  appTagline: { fontSize: 13, fontFamily: 'Inter_400Regular', letterSpacing: 0.5 },
+  header: { alignItems: 'center', paddingTop: 20, gap: 8 },
+  badgeRow: { marginBottom: 4 },
+  badge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 5,
+    borderRadius: 100, borderWidth: 1,
+  },
+  badgeDot: { width: 6, height: 6, borderRadius: 3 },
+  badgeText: { fontSize: 10, fontFamily: 'Inter_600SemiBold', letterSpacing: 1.5 },
+  appName: { fontSize: 32, fontFamily: 'Inter_700Bold', letterSpacing: 10 },
+  appTagline: { fontSize: 13, fontFamily: 'Inter_400Regular', letterSpacing: 0.3, opacity: 0.55 },
 
   centre: {
     flex: 1,

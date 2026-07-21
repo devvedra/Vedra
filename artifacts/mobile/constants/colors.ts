@@ -1,56 +1,36 @@
 /**
- * Vedra Design Tokens
+ * Vedra Design Tokens — v0.6 Premium Dark
  *
- * Deep dark theme with an indigo/violet accent — evokes a premium AI assistant.
- * Colors are organised as semantic tokens so components stay theme-unaware.
- *
- * Listening state uses `listeningRing` (green) to give clear visual feedback.
- * Processing state uses `processingRing` (amber) to indicate "thinking".
+ * Deep space base with electric violet + cyan dual-tone accents.
  */
 
 const colors = {
   light: {
-    // ─── Base surfaces ────────────────────────────────────────────────────────
-    background: '#070711',       // near-black navy
-    foreground: '#F1F5F9',       // off-white text
-
-    // ─── Cards / elevated panels ──────────────────────────────────────────────
-    card: '#0E0E1C',
-    cardForeground: '#F1F5F9',
-
-    // ─── Primary action — mic button idle colour ───────────────────────────────
-    primary: '#6366F1',          // indigo
-    primaryForeground: '#FFFFFF',
-
-    // ─── Secondary surfaces ───────────────────────────────────────────────────
-    secondary: '#141428',
-    secondaryForeground: '#F1F5F9',
-
-    // ─── Muted / subdued ──────────────────────────────────────────────────────
-    muted: '#1E1E38',
-    mutedForeground: '#64748B',
-
-    // ─── Accent glow colour ───────────────────────────────────────────────────
-    accent: '#818CF8',           // soft indigo glow
-    accentForeground: '#070711',
-
-    // ─── State colours ────────────────────────────────────────────────────────
-    listeningRing: '#22C55E',    // vivid green — "I'm listening"
-    processingRing: '#F59E0B',   // amber — "thinking"
-
-    // ─── Semantic ─────────────────────────────────────────────────────────────
-    destructive: '#EF4444',
-    destructiveForeground: '#FFFFFF',
-    border: '#1E1E38',
-    input: '#1E1E38',
-
-    // ─── Legacy alias (kept for scaffold compatibility) ────────────────────────
-    text: '#F1F5F9',
-    tint: '#6366F1',
+    background:           '#03030A',   // near-void black
+    foreground:           '#F0F4FF',
+    card:                 '#0A0A18',
+    cardForeground:       '#F0F4FF',
+    primary:              '#7C3AED',   // electric violet
+    primaryForeground:    '#FFFFFF',
+    secondary:            '#0D0D20',
+    secondaryForeground:  '#F0F4FF',
+    muted:                '#12122A',
+    mutedForeground:      '#4B5280',
+    accent:               '#06B6D4',   // electric cyan
+    accentForeground:     '#03030A',
+    accentSecondary:      '#7C3AED',
+    listeningRing:        '#10FFAA',   // electric mint — "I'm listening"
+    processingRing:       '#F59E0B',
+    destructive:          '#EF4444',
+    destructiveForeground:'#FFFFFF',
+    border:               '#1A1A35',
+    input:                '#1A1A35',
+    text:                 '#F0F4FF',
+    tint:                 '#7C3AED',
+    glowViolet:           'rgba(124, 58, 237, 0.18)',
+    glowCyan:             'rgba(6, 182, 212, 0.12)',
   },
-
-  // Border radius shared across cards, buttons, inputs
-  radius: 16,
+  radius: 20,
 };
 
 export default colors;

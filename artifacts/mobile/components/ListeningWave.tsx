@@ -1,98 +1,67 @@
 /**
- * ListeningWave
+ * ListeningWave — Vedra v0.6 Premium
  *
- * Five vertical bars that animate up and down when the microphone is active,
- * mimicking an audio waveform. Each bar has a staggered start delay so they
- * don't all pulse in unison — the visual effect feels organic and alive.
- *
- * When `isListening` is false the bars shrink to their minimum height.
+ * Nine animated bars with a violet→cyan gradient colour walk.
+ * Centre bar is tallest; outer bars are thinner and shorter.
  */
 
 import React, { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withRepeat,
-  withSequence,
-  withTiming,
-  withDelay,
-  cancelAnimation,
-  Easing,
+  useSharedValue, useAnimatedStyle,
+  withRepeat, withSequence, withTiming, withDelay,
+  cancelAnimation, Easing,
 } from 'react-native-reanimated';
-import { useColors } from '@/hooks/useColors';
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── Config ─────────────────────────────────────────────────────────────────────
+const BARS = 9;
+const MAX_H = 44;
+const MIN_H = 4;
+const DURATION = 340;
 
-const BAR_WIDTH = 5;
-const BAR_MIN_HEIGHT = 6;
-const BAR_MAX_HEIGHT = 36;
-const BAR_BORDER_RADIUS = 4;
-const BAR_SPACING = 7;
-const ANIMATION_DURATION = 380; // ms for one bar movement
+// Amplitude envelope — centred bell curve
+const AMP  = [0.28, 0.48, 0.70, 0.88, 1.0, 0.88, 0.70, 0.48, 0.28];
+// Stagger delays so no two adjacent bars move together
+const DELAY = [0, 180, 80, 260, 40, 220, 100, 300, 60];
+// Gradient: violet → cyan across the bar array
+const BAR_COLORS = [
+  '#7C3AED','#6D44EF','#5B52F0','#2A8FE8','#06B6D4',
+  '#2A8FE8','#5B52F0','#6D44EF','#7C3AED',
+];
+const BAR_WIDTHS  = [3,4,4,5,6,5,4,4,3];
+const BAR_SPACING = 5;
 
-// Relative amplitude pattern — centre bar is tallest
-const AMPLITUDES = [0.45, 0.72, 1.0, 0.72, 0.45];
-const DELAYS_MS = [0, 120, 60, 180, 90];
-
-// ── Component ─────────────────────────────────────────────────────────────────
-
-interface ListeningWaveProps {
-  isListening: boolean;
-}
-
-function Bar({
-  amplitude,
-  delayMs,
-  isListening,
-  color,
-}: {
-  amplitude: number;
-  delayMs: number;
-  isListening: boolean;
-  color: string;
-}) {
-  const maxH = BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * amplitude;
-  const height = useSharedValue(BAR_MIN_HEIGHT);
+// ── Bar ────────────────────────────────────────────────────────────────────────
+function Bar({ i, isListening }: { i: number; isListening: boolean }) {
+  const maxH = MIN_H + (MAX_H - MIN_H) * AMP[i];
+  const h    = useSharedValue(MIN_H);
 
   useEffect(() => {
     if (isListening) {
-      height.value = withDelay(
-        delayMs,
-        withRepeat(
-          withSequence(
-            withTiming(maxH, {
-              duration: ANIMATION_DURATION,
-              easing: Easing.inOut(Easing.quad),
-            }),
-            withTiming(BAR_MIN_HEIGHT, {
-              duration: ANIMATION_DURATION,
-              easing: Easing.inOut(Easing.quad),
-            }),
-          ),
-          -1,
-          false,
-        ),
-      );
+      h.value = withDelay(DELAY[i], withRepeat(
+        withSequence(
+          withTiming(maxH, { duration: DURATION, easing: Easing.inOut(Easing.quad) }),
+          withTiming(MIN_H, { duration: DURATION, easing: Easing.inOut(Easing.quad) }),
+        ), -1, false,
+      ));
     } else {
-      cancelAnimation(height);
-      height.value = withTiming(BAR_MIN_HEIGHT, { duration: 250 });
+      cancelAnimation(h);
+      h.value = withTiming(MIN_H, { duration: 280 });
     }
   }, [isListening]);
 
-  const animStyle = useAnimatedStyle(() => ({
-    height: height.value,
-  }));
+  const animStyle = useAnimatedStyle(() => ({ height: h.value }));
 
   return (
     <Animated.View
       style={[
-        styles.bar,
         {
-          width: BAR_WIDTH,
-          borderRadius: BAR_BORDER_RADIUS,
-          backgroundColor: color,
+          width: BAR_WIDTHS[i],
+          borderRadius: BAR_WIDTHS[i],
+          backgroundColor: BAR_COLORS[i],
           marginHorizontal: BAR_SPACING / 2,
+          alignSelf: 'center',
+          opacity: isListening ? 1 : 0.35,
         },
         animStyle,
       ]}
@@ -100,35 +69,22 @@ function Bar({
   );
 }
 
-export default function ListeningWave({ isListening }: ListeningWaveProps) {
-  const colors = useColors();
-  const barColor = colors.listeningRing;
-
+// ── Component ──────────────────────────────────────────────────────────────────
+export default function ListeningWave({ isListening }: { isListening: boolean }) {
   return (
     <View style={styles.container}>
-      {AMPLITUDES.map((amplitude, i) => (
-        <Bar
-          key={i}
-          amplitude={amplitude}
-          delayMs={DELAYS_MS[i]}
-          isListening={isListening}
-          color={barColor}
-        />
+      {Array.from({ length: BARS }).map((_, i) => (
+        <Bar key={i} i={i} isListening={isListening} />
       ))}
     </View>
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: BAR_MAX_HEIGHT + 8,
-    paddingHorizontal: 8,
-  },
-  bar: {
-    alignSelf: 'center',
+    height: MAX_H + 8,
+    paddingHorizontal: 4,
   },
 });
