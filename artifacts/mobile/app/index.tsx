@@ -1,9 +1,9 @@
 /**
- * Vedra — Voice Screen (v0.5)
+ * Vedra — Voice Screen (v0.6)
  *
- * Extends v0.3 with: Alarms, Timers, Stopwatch, Reminders, Calendar Events.
+ * Extends v0.5 with: Flashlight, Volume, Brightness, Battery, Wi-Fi, Bluetooth.
  *
- * All new features work 100% offline using Android's official APIs.
+ * All features work 100% offline using Android's official APIs.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -40,6 +40,12 @@ import { cancelTimer, queryTimer } from '@/utils/timerManager';
 import { createReminder, listReminders, deleteReminder } from '@/utils/reminderManager';
 import { createCalendarEvent, listTodayEvents, deleteCalendarEvent } from '@/utils/calendarManager';
 import { formatElapsed } from '@/utils/timeParser';
+// ── v0.6 Device Controls ──────────────────────────────────────────────────────
+import { setFlashlight } from '@/utils/flashlightManager';
+import { volumeUp, volumeDown, setVolumeTo, muteVolume, maxVolume } from '@/utils/volumeManager';
+import { brightnessUp, brightnessDown, setBrightnessTo, setBrightnessMin, setBrightnessMax } from '@/utils/brightnessManager';
+import { getBatteryInfo } from '@/utils/batteryManager';
+import { wifiOn, wifiOff, bluetoothOn, bluetoothOff } from '@/utils/connectivityManager';
 
 // ── Components ────────────────────────────────────────────────────────────────
 import MicButton from '@/components/MicButton';
@@ -54,6 +60,7 @@ import TimerDisplay from '@/components/TimerDisplay';
 import StopwatchDisplay from '@/components/StopwatchDisplay';
 import ReminderFeedback, { type ReminderFeedbackState } from '@/components/ReminderFeedback';
 import CalendarFeedback, { type CalendarFeedbackState } from '@/components/CalendarFeedback';
+import DeviceControlFeedback, { type DeviceControlState } from '@/components/DeviceControlFeedback';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -67,7 +74,8 @@ type ActivePanel =
   | 'alarm'
   | 'timer_result'
   | 'reminder'
-  | 'calendar';
+  | 'calendar'
+  | 'device';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Component
@@ -106,6 +114,7 @@ export default function VoiceScreen() {
   const [alarmFeedback,   setAlarmFeedback]   = useState<AlarmFeedbackState>({ phase: 'none' });
   const [reminderFeedback,setReminderFeedback]= useState<ReminderFeedbackState>({ phase: 'none' });
   const [calendarFeedback,setCalendarFeedback]= useState<CalendarFeedbackState>({ phase: 'none' });
+  const [deviceFeedback,  setDeviceFeedback]  = useState<DeviceControlState>({ phase: 'none' });
 
   // Prevent double-processing in React strict-mode
   const lastProcessed = useRef<string>('');
@@ -156,9 +165,27 @@ export default function VoiceScreen() {
       case 'SET_REMINDER': handleSetReminder(command.message, command.timeDisplay, command.triggerMs); break;
       case 'LIST_REMINDERS': handleListReminders();                                        break;
       case 'DELETE_REMINDER': handleDeleteReminder();                                      break;
-      case 'CREATE_EVENT': handleCreateEvent(command.title, command.timeDisplay, command.startMs, command.endMs); break;
-      case 'LIST_EVENTS':  handleListEvents();                                             break;
-      case 'DELETE_EVENT': handleDeleteEvent();                                            break;
+      case 'CREATE_EVENT':    handleCreateEvent(command.title, command.timeDisplay, command.startMs, command.endMs); break;
+      case 'LIST_EVENTS':     handleListEvents();                                                   break;
+      case 'DELETE_EVENT':    handleDeleteEvent();                                                   break;
+      // ── v0.6 Device Controls ──────────────────────────────────────────────
+      case 'FLASHLIGHT_ON':   handleFlashlight(transcript, true);                                   break;
+      case 'FLASHLIGHT_OFF':  handleFlashlight(transcript, false);                                  break;
+      case 'VOLUME_UP':       handleVolumeChange(transcript, 'up');                                 break;
+      case 'VOLUME_DOWN':     handleVolumeChange(transcript, 'down');                               break;
+      case 'VOLUME_SET':      handleVolumeChange(transcript, 'set', command.percent);               break;
+      case 'VOLUME_MUTE':     handleVolumeChange(transcript, 'mute');                               break;
+      case 'VOLUME_MAX':      handleVolumeChange(transcript, 'max');                                break;
+      case 'BRIGHTNESS_UP':   handleBrightnessChange(transcript, 'up');                             break;
+      case 'BRIGHTNESS_DOWN': handleBrightnessChange(transcript, 'down');                           break;
+      case 'BRIGHTNESS_SET':  handleBrightnessChange(transcript, 'set', command.percent);           break;
+      case 'BRIGHTNESS_MIN':  handleBrightnessChange(transcript, 'min');                            break;
+      case 'BRIGHTNESS_MAX':  handleBrightnessChange(transcript, 'max');                            break;
+      case 'BATTERY_STATUS':  handleBattery(transcript);                                            break;
+      case 'WIFI_ON':         handleConnectivity(transcript, 'wifi_on');                            break;
+      case 'WIFI_OFF':        handleConnectivity(transcript, 'wifi_off');                           break;
+      case 'BLUETOOTH_ON':    handleConnectivity(transcript, 'bt_on');                              break;
+      case 'BLUETOOTH_OFF':   handleConnectivity(transcript, 'bt_off');                             break;
     }
   }, [voiceState, transcript]);
 
@@ -491,6 +518,113 @@ export default function VoiceScreen() {
   }, [speak]);
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // v0.6 DEVICE CONTROL handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleFlashlight(raw: string, on: boolean) {
+    const label = on ? 'Flashlight On' : 'Flashlight Off';
+    setActivePanel('device');
+    setDeviceFeedback({ phase: 'working', transcript: raw, commandLabel: label });
+    const result = await setFlashlight(on);
+    if (result.success) {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'success', transcript: raw, commandLabel: label, detail: result.message });
+    } else {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'failed', transcript: raw, commandLabel: label, detail: result.message });
+    }
+  }
+
+  async function handleVolumeChange(
+    raw: string,
+    action: 'up' | 'down' | 'set' | 'mute' | 'max',
+    percent?: number,
+  ) {
+    const labelMap = { up: 'Volume Up', down: 'Volume Down', set: `Volume → ${percent}%`, mute: 'Mute', max: 'Max Volume' };
+    const label = labelMap[action];
+    setActivePanel('device');
+    setDeviceFeedback({ phase: 'working', transcript: raw, commandLabel: label });
+
+    let result;
+    if (action === 'up')   result = await volumeUp();
+    else if (action === 'down') result = await volumeDown();
+    else if (action === 'set' && percent !== undefined) result = await setVolumeTo(percent);
+    else if (action === 'mute') result = await muteVolume();
+    else result = await maxVolume();
+
+    if (result.success) {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'success', transcript: raw, commandLabel: label, detail: result.message });
+    } else {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'failed', transcript: raw, commandLabel: label, detail: result.message });
+    }
+  }
+
+  async function handleBrightnessChange(
+    raw: string,
+    action: 'up' | 'down' | 'set' | 'min' | 'max',
+    percent?: number,
+  ) {
+    const labelMap = { up: 'Brightness Up', down: 'Brightness Down', set: `Brightness → ${percent}%`, min: 'Min Brightness', max: 'Max Brightness' };
+    const label = labelMap[action];
+    setActivePanel('device');
+    setDeviceFeedback({ phase: 'working', transcript: raw, commandLabel: label });
+
+    let result;
+    if (action === 'up')   result = await brightnessUp();
+    else if (action === 'down') result = await brightnessDown();
+    else if (action === 'set' && percent !== undefined) result = await setBrightnessTo(percent);
+    else if (action === 'min') result = await setBrightnessMin();
+    else result = await setBrightnessMax();
+
+    if (result.success) {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'success', transcript: raw, commandLabel: label, detail: result.message });
+    } else {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'failed', transcript: raw, commandLabel: label, detail: result.message });
+    }
+  }
+
+  async function handleBattery(raw: string) {
+    setActivePanel('device');
+    setDeviceFeedback({ phase: 'working', transcript: raw, commandLabel: 'Battery Status' });
+    const result = await getBatteryInfo();
+    if (result.success) {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'success', transcript: raw, commandLabel: 'Battery Status', detail: result.message });
+    } else {
+      speak(result.message);
+      setDeviceFeedback({ phase: 'failed', transcript: raw, commandLabel: 'Battery Status', detail: result.message });
+    }
+  }
+
+  async function handleConnectivity(
+    raw: string,
+    action: 'wifi_on' | 'wifi_off' | 'bt_on' | 'bt_off',
+  ) {
+    const labelMap = { wifi_on: 'Wi-Fi On', wifi_off: 'Wi-Fi Off', bt_on: 'Bluetooth On', bt_off: 'Bluetooth Off' };
+    const label = labelMap[action];
+    setActivePanel('device');
+    setDeviceFeedback({ phase: 'working', transcript: raw, commandLabel: label });
+
+    let result;
+    if (action === 'wifi_on')  result = await wifiOn();
+    else if (action === 'wifi_off') result = await wifiOff();
+    else if (action === 'bt_on')    result = await bluetoothOn();
+    else result = await bluetoothOff();
+
+    speak(result.message);
+    if (result.success) {
+      const phase = result.openedSettings ? 'settings' : 'success';
+      setDeviceFeedback({ phase, transcript: raw, commandLabel: label, detail: result.message });
+    } else {
+      setDeviceFeedback({ phase: 'failed', transcript: raw, commandLabel: label, detail: result.message });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Mic button handler
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -508,6 +642,7 @@ export default function VoiceScreen() {
       setAlarmFeedback({ phase: 'none' });
       setReminderFeedback({ phase: 'none' });
       setCalendarFeedback({ phase: 'none' });
+      setDeviceFeedback({ phase: 'none' });
       pendingSmsRef.current = null;
       stopSpeaking();
       resetVoice();
@@ -521,6 +656,7 @@ export default function VoiceScreen() {
       setAlarmFeedback({ phase: 'none' });
       setReminderFeedback({ phase: 'none' });
       setCalendarFeedback({ phase: 'none' });
+      setDeviceFeedback({ phase: 'none' });
       pendingSmsRef.current = null;
       await startListening();
     } else if (voiceState === 'processing') {
@@ -536,12 +672,12 @@ export default function VoiceScreen() {
   const showHint = activePanel === 'none' && !showLiveTranscript && timerManager.state.isIdle && stopwatch.state.status === 'idle';
 
   const HINTS = [
-    '"Set alarm for 6 AM"',
-    '"Start a 10 minute timer"',
-    '"Start stopwatch"',
-    '"Remind me to study at 7 PM"',
-    '"Call Mom"  ·  "Open WhatsApp"',
-    '"Show my calendar"',
+    '"Set alarm for 6 AM"  ·  "Start a 10 minute timer"',
+    '"Turn on flashlight"  ·  "Torch off"',
+    '"Volume up"  ·  "Set volume to 50 percent"',
+    '"Battery percentage"  ·  "Max brightness"',
+    '"Call Mom"  ·  "Open WhatsApp"  ·  "Start stopwatch"',
+    '"Turn on Bluetooth"  ·  "Wi-Fi off"',
   ];
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -629,6 +765,9 @@ export default function VoiceScreen() {
         {activePanel === 'calendar' && (
           <CalendarFeedback state={calendarFeedback} onDeleteEvent={doDeleteEvent} />
         )}
+
+        {/* ── Device control feedback (v0.6) ── */}
+        {activePanel === 'device' && <DeviceControlFeedback state={deviceFeedback} />}
 
         {/* ── Idle hints ── */}
         {showHint && (

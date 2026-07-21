@@ -1,27 +1,44 @@
 /**
- * commandParser.ts — Vedra Command Parser (v0.5)
+ * commandParser.ts — Vedra Command Parser (v0.6)
  *
  * Parses free-form voice transcripts into typed commands, entirely offline
  * using string matching. No network calls, no AI services.
  *
  * ── Supported command types ─────────────────────────────────────────────────
  *
- *  OPEN_APP      — "Open WhatsApp", "Launch Chrome"…
- *  CALL_CONTACT  — "Call Mom", "Dial Rahul"…
- *  SEND_SMS      — "Text Mom saying I'll be late"…
- *  SET_ALARM     — "Set alarm for 6 AM", "Wake me at 5:30"…
- *  CANCEL_ALARM  — "Cancel my alarm", "Delete 6 AM alarm"…
- *  LIST_ALARMS   — "Show my alarms", "What alarms do I have?"…
- *  START_TIMER   — "Start a 10 minute timer", "Set timer for 25 min"…
- *  CANCEL_TIMER  — "Cancel timer", "Stop timer"…
- *  QUERY_TIMER   — "How much time is left?", "Check timer"…
- *  STOPWATCH     — "Start stopwatch", "Pause stopwatch"…
- *  SET_REMINDER  — "Remind me to study at 7 PM"…
- *  LIST_REMINDERS — "Show my reminders"…
+ *  OPEN_APP        — "Open WhatsApp", "Launch Chrome"…
+ *  CALL_CONTACT    — "Call Mom", "Dial Rahul"…
+ *  SEND_SMS        — "Text Mom saying I'll be late"…
+ *  SET_ALARM       — "Set alarm for 6 AM", "Wake me at 5:30"…
+ *  CANCEL_ALARM    — "Cancel my alarm", "Delete 6 AM alarm"…
+ *  LIST_ALARMS     — "Show my alarms", "What alarms do I have?"…
+ *  START_TIMER     — "Start a 10 minute timer", "Set timer for 25 min"…
+ *  CANCEL_TIMER    — "Cancel timer", "Stop timer"…
+ *  QUERY_TIMER     — "How much time is left?", "Check timer"…
+ *  STOPWATCH       — "Start stopwatch", "Pause stopwatch"…
+ *  SET_REMINDER    — "Remind me to study at 7 PM"…
+ *  LIST_REMINDERS  — "Show my reminders"…
  *  DELETE_REMINDER — "Delete my reminder"…
- *  CREATE_EVENT  — "Create meeting tomorrow at 10 AM"…
- *  LIST_EVENTS   — "Show today's schedule", "What's on my calendar?"…
- *  DELETE_EVENT  — "Delete today's meeting"…
+ *  CREATE_EVENT    — "Create meeting tomorrow at 10 AM"…
+ *  LIST_EVENTS     — "Show today's schedule", "What's on my calendar?"…
+ *  DELETE_EVENT    — "Delete today's meeting"…
+ *  FLASHLIGHT_ON   — "Turn on flashlight", "Torch on"…
+ *  FLASHLIGHT_OFF  — "Turn off flashlight", "Torch off"…
+ *  VOLUME_UP       — "Volume up", "Increase volume"…
+ *  VOLUME_DOWN     — "Volume down", "Decrease volume"…
+ *  VOLUME_SET      — "Set volume to 50 percent"…
+ *  VOLUME_MUTE     — "Mute phone", "Mute"…
+ *  VOLUME_MAX      — "Max volume", "Maximum volume"…
+ *  BRIGHTNESS_UP   — "Increase brightness", "Brightness up"…
+ *  BRIGHTNESS_DOWN — "Decrease brightness", "Brightness down"…
+ *  BRIGHTNESS_SET  — "Set brightness to 70 percent"…
+ *  BRIGHTNESS_MIN  — "Minimum brightness"…
+ *  BRIGHTNESS_MAX  — "Maximum brightness"…
+ *  BATTERY_STATUS  — "Battery percentage", "How much battery is left?"…
+ *  WIFI_ON         — "Turn on Wi-Fi"…
+ *  WIFI_OFF        — "Turn off Wi-Fi"…
+ *  BLUETOOTH_ON    — "Turn on Bluetooth"…
+ *  BLUETOOTH_OFF   — "Turn off Bluetooth"…
  */
 
 import { parseAbsoluteTime, parseDuration } from './timeParser';
@@ -61,7 +78,29 @@ export type ParsedCommand =
   // ── Calendar ───────────────────────────────────────────────────────────────
   | { type: 'CREATE_EVENT'; title: string; timeDisplay: string; startMs: number; endMs: number }
   | { type: 'LIST_EVENTS' }
-  | { type: 'DELETE_EVENT' };
+  | { type: 'DELETE_EVENT' }
+  // ── Flashlight ─────────────────────────────────────────────────────────────
+  | { type: 'FLASHLIGHT_ON' }
+  | { type: 'FLASHLIGHT_OFF' }
+  // ── Volume ─────────────────────────────────────────────────────────────────
+  | { type: 'VOLUME_UP' }
+  | { type: 'VOLUME_DOWN' }
+  | { type: 'VOLUME_SET'; percent: number }
+  | { type: 'VOLUME_MUTE' }
+  | { type: 'VOLUME_MAX' }
+  // ── Brightness ─────────────────────────────────────────────────────────────
+  | { type: 'BRIGHTNESS_UP' }
+  | { type: 'BRIGHTNESS_DOWN' }
+  | { type: 'BRIGHTNESS_SET'; percent: number }
+  | { type: 'BRIGHTNESS_MIN' }
+  | { type: 'BRIGHTNESS_MAX' }
+  // ── Battery ────────────────────────────────────────────────────────────────
+  | { type: 'BATTERY_STATUS' }
+  // ── Connectivity ───────────────────────────────────────────────────────────
+  | { type: 'WIFI_ON' }
+  | { type: 'WIFI_OFF' }
+  | { type: 'BLUETOOTH_ON' }
+  | { type: 'BLUETOOTH_OFF' };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // App Registry
@@ -143,22 +182,40 @@ export function parseCommand(text: string): ParsedCommand | null {
   const cleaned = normalise(text);
 
   return (
-    tryOpenApp(cleaned)      ??
-    tryCallContact(cleaned)  ??
-    trySendSms(cleaned)      ??
-    trySetAlarm(cleaned)     ??
-    tryCancelAlarm(cleaned)  ??
-    tryListAlarms(cleaned)   ??
-    tryStartTimer(cleaned)   ??
-    tryCancelTimer(cleaned)  ??
-    tryQueryTimer(cleaned)   ??
-    tryStopwatch(cleaned)    ??
-    trySetReminder(cleaned)  ??
-    tryListReminders(cleaned)??
-    tryDeleteReminder(cleaned)??
-    tryCreateEvent(cleaned)  ??
-    tryListEvents(cleaned)   ??
-    tryDeleteEvent(cleaned)  ??
+    tryOpenApp(cleaned)        ??
+    tryCallContact(cleaned)    ??
+    trySendSms(cleaned)        ??
+    trySetAlarm(cleaned)       ??
+    tryCancelAlarm(cleaned)    ??
+    tryListAlarms(cleaned)     ??
+    tryStartTimer(cleaned)     ??
+    tryCancelTimer(cleaned)    ??
+    tryQueryTimer(cleaned)     ??
+    tryStopwatch(cleaned)      ??
+    trySetReminder(cleaned)    ??
+    tryListReminders(cleaned)  ??
+    tryDeleteReminder(cleaned) ??
+    tryCreateEvent(cleaned)    ??
+    tryListEvents(cleaned)     ??
+    tryDeleteEvent(cleaned)    ??
+    // ── v0.6 device controls (checked after all existing commands) ──
+    tryFlashlightOn(cleaned)   ??
+    tryFlashlightOff(cleaned)  ??
+    tryVolumeUp(cleaned)       ??
+    tryVolumeDown(cleaned)     ??
+    tryVolumeSet(cleaned)      ??
+    tryVolumeMute(cleaned)     ??
+    tryVolumeMax(cleaned)      ??
+    tryBrightnessUp(cleaned)   ??
+    tryBrightnessDown(cleaned) ??
+    tryBrightnessSet(cleaned)  ??
+    tryBrightnessMin(cleaned)  ??
+    tryBrightnessMax(cleaned)  ??
+    tryBatteryStatus(cleaned)  ??
+    tryWifiOn(cleaned)         ??
+    tryWifiOff(cleaned)        ??
+    tryBluetoothOn(cleaned)    ??
+    tryBluetoothOff(cleaned)   ??
     null
   );
 }
@@ -378,6 +435,83 @@ function tryListEvents(c: string): ParsedCommand | null {
 function tryDeleteEvent(c: string): ParsedCommand | null {
   return EVENT_DELETE_KW.some((kw) => c.includes(kw)) ? { type: 'DELETE_EVENT' } : null;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.6 parse passes — Flashlight
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const FLASH_ON_KW  = ['turn on flashlight','turn on torch','flashlight on','torch on','enable flashlight','enable torch','switch on flashlight','switch on torch','put on flashlight'];
+const FLASH_OFF_KW = ['turn off flashlight','turn off torch','flashlight off','torch off','disable flashlight','disable torch','switch off flashlight','switch off torch','put off flashlight'];
+
+function tryFlashlightOn(c: string):  ParsedCommand | null { return FLASH_ON_KW.some(kw  => c.includes(kw)) ? { type: 'FLASHLIGHT_ON'  } : null; }
+function tryFlashlightOff(c: string): ParsedCommand | null { return FLASH_OFF_KW.some(kw => c.includes(kw)) ? { type: 'FLASHLIGHT_OFF' } : null; }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.6 parse passes — Volume
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const VOLUME_UP_KW   = ['increase volume','volume up','louder','turn up volume','turn volume up','raise volume','increase the volume'];
+const VOLUME_DOWN_KW = ['decrease volume','volume down','quieter','lower volume','turn down volume','turn volume down','reduce volume','decrease the volume'];
+const VOLUME_MUTE_KW = ['mute phone','mute the phone','mute','silence phone','silence the phone','put on silent'];
+const VOLUME_MAX_KW  = ['max volume','maximum volume','full volume','volume full','turn volume up all the way','highest volume'];
+// "set volume to N percent" / "volume to N%"
+const VOLUME_SET_PAT = /(?:set volume to|volume to|set the volume to)\s+(\d+)\s*(?:percent|%)?/;
+
+function tryVolumeUp(c: string):   ParsedCommand | null { return VOLUME_UP_KW.some(kw   => c.includes(kw)) ? { type: 'VOLUME_UP'   } : null; }
+function tryVolumeDown(c: string): ParsedCommand | null { return VOLUME_DOWN_KW.some(kw => c.includes(kw)) ? { type: 'VOLUME_DOWN' } : null; }
+function tryVolumeMute(c: string): ParsedCommand | null { return VOLUME_MUTE_KW.some(kw => c.includes(kw)) ? { type: 'VOLUME_MUTE' } : null; }
+function tryVolumeMax(c: string):  ParsedCommand | null { return VOLUME_MAX_KW.some(kw  => c.includes(kw)) ? { type: 'VOLUME_MAX'  } : null; }
+function tryVolumeSet(c: string): ParsedCommand | null {
+  const m = c.match(VOLUME_SET_PAT);
+  if (!m) return null;
+  const percent = Math.max(0, Math.min(100, parseInt(m[1], 10)));
+  return { type: 'VOLUME_SET', percent };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.6 parse passes — Brightness
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const BRIGHT_UP_KW   = ['increase brightness','brightness up','brighter','turn up brightness','raise brightness','increase the brightness'];
+const BRIGHT_DOWN_KW = ['decrease brightness','brightness down','dimmer','dim screen','turn down brightness','lower brightness','decrease the brightness'];
+const BRIGHT_MIN_KW  = ['minimum brightness','brightness minimum','lowest brightness','dim the screen completely'];
+const BRIGHT_MAX_KW  = ['maximum brightness','brightness maximum','highest brightness','full brightness','brightest'];
+const BRIGHT_SET_PAT = /(?:set brightness to|brightness to|set the brightness to)\s+(\d+)\s*(?:percent|%)?/;
+
+function tryBrightnessUp(c: string):   ParsedCommand | null { return BRIGHT_UP_KW.some(kw   => c.includes(kw)) ? { type: 'BRIGHTNESS_UP'  } : null; }
+function tryBrightnessDown(c: string): ParsedCommand | null { return BRIGHT_DOWN_KW.some(kw => c.includes(kw)) ? { type: 'BRIGHTNESS_DOWN'} : null; }
+function tryBrightnessMin(c: string):  ParsedCommand | null { return BRIGHT_MIN_KW.some(kw  => c.includes(kw)) ? { type: 'BRIGHTNESS_MIN' } : null; }
+function tryBrightnessMax(c: string):  ParsedCommand | null { return BRIGHT_MAX_KW.some(kw  => c.includes(kw)) ? { type: 'BRIGHTNESS_MAX' } : null; }
+function tryBrightnessSet(c: string): ParsedCommand | null {
+  const m = c.match(BRIGHT_SET_PAT);
+  if (!m) return null;
+  const percent = Math.max(0, Math.min(100, parseInt(m[1], 10)));
+  return { type: 'BRIGHTNESS_SET', percent };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.6 parse passes — Battery
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const BATTERY_KW = ['battery percentage','battery percent','battery level','battery status','battery life','how much battery','how much battery is left','check battery','battery remaining','whats my battery','what is my battery'];
+
+function tryBatteryStatus(c: string): ParsedCommand | null {
+  return BATTERY_KW.some(kw => c.includes(kw)) ? { type: 'BATTERY_STATUS' } : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.6 parse passes — Connectivity
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const WIFI_ON_KW   = ['turn on wifi','turn on wi-fi','enable wifi','enable wi-fi','wifi on','wi-fi on','connect wifi','switch on wifi'];
+const WIFI_OFF_KW  = ['turn off wifi','turn off wi-fi','disable wifi','disable wi-fi','wifi off','wi-fi off','disconnect wifi','switch off wifi'];
+const BT_ON_KW     = ['turn on bluetooth','enable bluetooth','bluetooth on','switch on bluetooth'];
+const BT_OFF_KW    = ['turn off bluetooth','disable bluetooth','bluetooth off','switch off bluetooth'];
+
+function tryWifiOn(c: string):      ParsedCommand | null { return WIFI_ON_KW.some(kw  => c.includes(kw)) ? { type: 'WIFI_ON'       } : null; }
+function tryWifiOff(c: string):     ParsedCommand | null { return WIFI_OFF_KW.some(kw => c.includes(kw)) ? { type: 'WIFI_OFF'      } : null; }
+function tryBluetoothOn(c: string): ParsedCommand | null { return BT_ON_KW.some(kw    => c.includes(kw)) ? { type: 'BLUETOOTH_ON'  } : null; }
+function tryBluetoothOff(c: string):ParsedCommand | null { return BT_OFF_KW.some(kw   => c.includes(kw)) ? { type: 'BLUETOOTH_OFF' } : null; }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helpers

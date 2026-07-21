@@ -31,7 +31,11 @@
         "android.permission.WRITE_CALENDAR",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.VIBRATE",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.CAMERA",
+        "android.permission.FLASHLIGHT",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.WRITE_SETTINGS"
       ]
     },
     "web": {

@@ -1,5 +1,5 @@
 ---
-name: Vedra v0.5 architecture
+name: Vedra v0.6 architecture
 description: Module layout, command parser structure, and platform decisions for Vedra mobile app
 ---
 
@@ -17,9 +17,15 @@ description: Module layout, command parser structure, and platform decisions for
 
 **Notifications:** expo-notifications (added in v0.5). initNotifications() called in _layout.tsx. Web preview shows deprecation warning — expected, not a bug.
 
-**Command parser parsing order:** OPEN_APP → CALL_CONTACT → SEND_SMS → SET_ALARM → CANCEL_ALARM → LIST_ALARMS → START_TIMER → CANCEL_TIMER → QUERY_TIMER → STOPWATCH → SET_REMINDER → LIST_REMINDERS → DELETE_REMINDER → CREATE_EVENT → LIST_EVENTS → DELETE_EVENT.
+**Command parser parsing order:** OPEN_APP → CALL_CONTACT → SEND_SMS → SET_ALARM → CANCEL_ALARM → LIST_ALARMS → START_TIMER → CANCEL_TIMER → QUERY_TIMER → STOPWATCH → SET_REMINDER → LIST_REMINDERS → DELETE_REMINDER → CREATE_EVENT → LIST_EVENTS → DELETE_EVENT → FLASHLIGHT_ON/OFF → VOLUME_* → BRIGHTNESS_* → BATTERY_STATUS → WIFI_ON/OFF → BLUETOOTH_ON/OFF.
 
-**Why:** More specific commands (alarm, timer) come after existing ones (open/call/sms) to avoid false matches. Stopwatch reset/resume/pause parsed before start/stop to avoid partial keyword matches.
+**Why:** Device controls come last — they use broad keywords ("on"/"off") that could conflict with earlier commands if checked first. Stopwatch reset/resume/pause parsed before start/stop to avoid partial keyword matches.
+
+**v0.6 packages added:** expo-battery@~10.0.8, expo-brightness@~14.0.8, react-native-torch@^1.2.0, react-native-volume-manager@^2.0.8. All device control utils use dynamic imports so web/iOS don't crash at load time.
+
+**Wi-Fi / Bluetooth:** Android 10+ blocks direct toggle. Always open Settings via expo-intent-launcher (already installed). Never attempt direct toggle — it will silently fail or throw.
+
+**Brightness:** expo-brightness setBrightnessAsync controls app-level brightness without special permission. setSystemBrightnessAsync needs WRITE_SETTINGS (special permission in Android settings). We try system first, fall back to app-level.
 
 ## Module locations
 - `utils/timeParser.ts` — natural language time/duration parser (no deps)
