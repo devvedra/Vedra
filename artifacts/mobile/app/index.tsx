@@ -206,6 +206,8 @@ export default function VoiceScreen() {
     if (transcript === lastProcessed.current) return;
     lastProcessed.current = transcript;
 
+    void (async () => {
+
     // ── Handle pending SMS confirmation ──────────────────────────────────────
     if (pendingSmsRef.current) {
       const lc = transcript.toLowerCase();
@@ -395,6 +397,8 @@ export default function VoiceScreen() {
 
     // ── Fallback 4: Cloud AI (if enabled) ────────────────────────────────────
     handleAIQuery(transcript);
+
+    })(); // end async IIFE
   }, [voiceState, transcript]);
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -1,5 +1,5 @@
 /**
- * privacyManager.ts — Vedra Privacy Manager (v0.9)
+ * privacyManager.ts — Vedra Privacy Manager (v1.0)
  *
  * Gives users full control over locally stored data.
  * Nothing is ever uploaded automatically.
@@ -86,7 +86,7 @@ export async function clearAllData(): Promise<void> {
 
 export interface ExportedData {
   exportedAt: string;
-  version: '0.9';
+  version: '1.0';
   conversationHistory: Awaited<ReturnType<typeof getConversationHistory>>;
   userProfile: object | null;
   contacts: object[];

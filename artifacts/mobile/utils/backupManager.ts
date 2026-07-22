@@ -7,7 +7,10 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+// expo-file-system v19 moved async helper functions to a legacy namespace.
+// Import directly from the legacy build to ensure all APIs (documentDirectory,
+// getInfoAsync, makeDirectoryAsync, writeAsStringAsync, etc.) work at runtime.
+import * as FileSystem from 'expo-file-system/build/legacy';
 import { getConversationHistory } from './conversationManager';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -141,7 +144,7 @@ export async function listBackups(): Promise<BackupFileInfo[]> {
     const infos: BackupFileInfo[] = await Promise.all(
       jsonFiles.map(async (name) => {
         const path = dir + name;
-        const info = await FileSystem.getInfoAsync(path, { size: true });
+        const info = await FileSystem.getInfoAsync(path);
         return {
           name,
           path,
