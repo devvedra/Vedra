@@ -1,10 +1,8 @@
 /**
- * settingsStore.ts — Vedra Settings (v0.9)
+ * settingsStore.ts — Vedra Settings (v1.0)
  *
  * Persists all user-configurable settings to AsyncStorage.
- * API keys are stored under a separate key with a clear warning
- * that users should treat them as sensitive credentials.
- *
+ * API keys are stored under a separate key.
  * Never transmit settings or keys to any server automatically.
  */
 
@@ -13,39 +11,46 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type AIProviderID = 'openai' | 'gemini';
+export type ThemeMode    = 'dark' | 'light' | 'system';
 
 export interface VedraSettings {
   // Cloud AI
-  cloudAIEnabled: boolean;
-  selectedProvider: AIProviderID;
+  cloudAIEnabled:          boolean;
+  selectedProvider:        AIProviderID;
+  // Offline / performance
+  offlineFirst:            boolean;
   // Voice
-  language: string;
-  voiceSpeed: number;   // 0.5–2.0
-  voicePitch: number;   // 0.5–2.0
+  language:                string;
+  voiceSpeed:              number;   // 0.5–2.0
+  voicePitch:              number;   // 0.5–2.0
   // Wake phrase (future)
-  wakePhraseEnabled: boolean;
-  wakePhrase: string;
+  wakePhraseEnabled:       boolean;
+  wakePhrase:              string;
   // Privacy
   saveConversationHistory: boolean;
+  // Appearance
+  theme:                   ThemeMode;
   // Meta
-  updatedAt: number;
+  updatedAt:               number;
 }
 
 const DEFAULTS: VedraSettings = {
-  cloudAIEnabled: false,
-  selectedProvider: 'openai',
-  language: 'en-US',
-  voiceSpeed: 1.0,
-  voicePitch: 1.0,
-  wakePhraseEnabled: false,
-  wakePhrase: 'Hey Vedra',
+  cloudAIEnabled:          false,
+  selectedProvider:        'openai',
+  offlineFirst:            true,
+  language:                'en-US',
+  voiceSpeed:              1.0,
+  voicePitch:              1.0,
+  wakePhraseEnabled:       false,
+  wakePhrase:              'Hey Vedra',
   saveConversationHistory: true,
-  updatedAt: 0,
+  theme:                   'dark',
+  updatedAt:               0,
 };
 
 const K = {
-  SETTINGS:  '@vedra/settings_v9',
-  API_KEYS:  '@vedra/api_keys_v9',   // { openai?: string; gemini?: string }
+  SETTINGS: '@vedra/settings_v9',
+  API_KEYS: '@vedra/api_keys_v9',
 };
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
@@ -56,7 +61,9 @@ export async function getSettings(): Promise<VedraSettings> {
   if (_cache) return _cache;
   try {
     const raw = await AsyncStorage.getItem(K.SETTINGS);
-    const loaded: VedraSettings = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
+    const loaded: VedraSettings = raw
+      ? { ...DEFAULTS, ...JSON.parse(raw) }
+      : { ...DEFAULTS };
     _cache = loaded;
     return loaded;
   } catch {

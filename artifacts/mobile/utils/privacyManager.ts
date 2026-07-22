@@ -110,7 +110,7 @@ export async function exportData(): Promise<ExportedData> {
 
   return {
     exportedAt: new Date().toISOString(),
-    version: '0.9',
+    version: '1.0',
     conversationHistory: await getConversationHistory(),
     userProfile:    parse(profile),
     contacts:       parse(contacts, []),
