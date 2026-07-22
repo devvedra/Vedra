@@ -7,10 +7,14 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-// expo-file-system v19 moved async helper functions to a legacy namespace.
-// Import directly from the legacy build to ensure all APIs (documentDirectory,
-// getInfoAsync, makeDirectoryAsync, writeAsStringAsync, etc.) work at runtime.
-import * as FileSystem from 'expo-file-system/build/legacy';
+// expo-file-system v19 re-exports all legacy helpers (getInfoAsync,
+// makeDirectoryAsync, writeAsStringAsync, readAsStringAsync, deleteAsync,
+// readDirectoryAsync, documentDirectory) from its main entry at runtime.
+// TypeScript types for the new main entry are narrower, so we cast via `any`
+// only where the type definitions don't expose the legacy surface.
+import * as _FileSystem from 'expo-file-system';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const FileSystem = _FileSystem as any;
 import { getConversationHistory } from './conversationManager';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
