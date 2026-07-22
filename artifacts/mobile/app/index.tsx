@@ -1,7 +1,8 @@
 /**
- * Vedra — Voice Screen (v0.6)
+ * Vedra — Voice Screen (v0.7)
  *
- * Extends v0.5 with: Flashlight, Volume, Brightness, Battery, Wi-Fi, Bluetooth.
+ * Extends v0.6 with: Media Controls, Notification Reader, Device Info,
+ * Quick Actions, and Offline Small Talk.
  *
  * All features work 100% offline using Android's official APIs.
  */
@@ -46,6 +47,24 @@ import { volumeUp, volumeDown, setVolumeTo, muteVolume, maxVolume } from '@/util
 import { brightnessUp, brightnessDown, setBrightnessTo, setBrightnessMin, setBrightnessMax } from '@/utils/brightnessManager';
 import { getBatteryInfo } from '@/utils/batteryManager';
 import { wifiOn, wifiOff, bluetoothOn, bluetoothOff } from '@/utils/connectivityManager';
+// ── v0.7 New Features ─────────────────────────────────────────────────────────
+import {
+  mediaPlay, mediaPause, mediaPlayPause, mediaNext,
+  mediaPrevious, mediaStop, mediaVolumeUp, mediaVolumeDown,
+} from '@/utils/mediaController';
+import {
+  readAllNotifications, readLatestNotification,
+  checkNewMessages, readAppNotifications, clearAllNotifications,
+} from '@/utils/notificationReader';
+import {
+  getStorageInfo, getRamInfo, getBatteryHealth, getDeviceModel,
+  getAndroidVersion, getDateTime, getAllDeviceInfo,
+} from '@/utils/deviceInfoManager';
+import {
+  openRecentApps, goHome, openNotifications, openQuickSettings,
+  openAppInfo, openWifiSettings, openBluetoothSettings, openDisplaySettings,
+} from '@/utils/quickActionsManager';
+import { trySmallTalk } from '@/utils/smallTalk';
 
 // ── Components ────────────────────────────────────────────────────────────────
 import MicButton from '@/components/MicButton';
@@ -61,6 +80,10 @@ import StopwatchDisplay from '@/components/StopwatchDisplay';
 import ReminderFeedback, { type ReminderFeedbackState } from '@/components/ReminderFeedback';
 import CalendarFeedback, { type CalendarFeedbackState } from '@/components/CalendarFeedback';
 import DeviceControlFeedback, { type DeviceControlState } from '@/components/DeviceControlFeedback';
+import MediaFeedback, { type MediaFeedbackState } from '@/components/MediaFeedback';
+import NotificationFeedback, { type NotificationFeedbackState } from '@/components/NotificationFeedback';
+import DeviceInfoFeedback, { type DeviceInfoFeedbackState } from '@/components/DeviceInfoFeedback';
+import QuickActionFeedback, { type QuickActionFeedbackState } from '@/components/QuickActionFeedback';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -75,7 +98,11 @@ type ActivePanel =
   | 'timer_result'
   | 'reminder'
   | 'calendar'
-  | 'device';
+  | 'device'
+  | 'media'
+  | 'notifications'
+  | 'device_info'
+  | 'quick_action';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Component
@@ -115,6 +142,10 @@ export default function VoiceScreen() {
   const [reminderFeedback,setReminderFeedback]= useState<ReminderFeedbackState>({ phase: 'none' });
   const [calendarFeedback,setCalendarFeedback]= useState<CalendarFeedbackState>({ phase: 'none' });
   const [deviceFeedback,  setDeviceFeedback]  = useState<DeviceControlState>({ phase: 'none' });
+  const [mediaFeedback,   setMediaFeedback]   = useState<MediaFeedbackState>({ phase: 'none' });
+  const [notifFeedback,   setNotifFeedback]   = useState<NotificationFeedbackState>({ phase: 'none' });
+  const [devInfoFeedback, setDevInfoFeedback] = useState<DeviceInfoFeedbackState>({ phase: 'none' });
+  const [qaFeedback,      setQaFeedback]      = useState<QuickActionFeedbackState>({ phase: 'none' });
 
   // Prevent double-processing in React strict-mode
   const lastProcessed = useRef<string>('');
@@ -146,8 +177,14 @@ export default function VoiceScreen() {
     const command = parseCommand(transcript);
 
     if (!command) {
+      // Try offline small talk before falling back to echo
+      const st = trySmallTalk(transcript);
       setActivePanel('none');
-      speak(`I heard: ${transcript}`);
+      if (st.matched) {
+        speak(st.response);
+      } else {
+        speak(`I heard: ${transcript}. I don't know how to do that yet.`);
+      }
       return;
     }
 
@@ -186,6 +223,24 @@ export default function VoiceScreen() {
       case 'WIFI_OFF':        handleConnectivity(transcript, 'wifi_off');                           break;
       case 'BLUETOOTH_ON':    handleConnectivity(transcript, 'bt_on');                              break;
       case 'BLUETOOTH_OFF':   handleConnectivity(transcript, 'bt_off');                             break;
+      // ── v0.7 Media Controls ──────────────────────────────────────────────
+      case 'MEDIA_PLAY':       handleMedia(transcript, 'play');      break;
+      case 'MEDIA_PAUSE':      handleMedia(transcript, 'pause');     break;
+      case 'MEDIA_RESUME':     handleMedia(transcript, 'resume');    break;
+      case 'MEDIA_NEXT':       handleMedia(transcript, 'next');      break;
+      case 'MEDIA_PREVIOUS':   handleMedia(transcript, 'previous'); break;
+      case 'MEDIA_STOP':       handleMedia(transcript, 'stop');      break;
+      case 'MEDIA_VOLUME_UP':  handleMedia(transcript, 'vol_up');   break;
+      case 'MEDIA_VOLUME_DOWN':handleMedia(transcript, 'vol_down'); break;
+      // ── v0.7 Notifications ───────────────────────────────────────────────
+      case 'READ_NOTIFICATIONS':       handleNotifications(transcript, command.appFilter);          break;
+      case 'READ_LATEST_NOTIFICATION': handleNotifications(transcript, undefined, 'latest');        break;
+      case 'CHECK_MESSAGES':           handleNotifications(transcript, undefined, 'messages');      break;
+      case 'CLEAR_NOTIFICATIONS':      handleNotifications(transcript, undefined, 'clear');         break;
+      // ── v0.7 Device Info ─────────────────────────────────────────────────
+      case 'DEVICE_INFO': handleDeviceInfo(transcript, command.infoType);                          break;
+      // ── v0.7 Quick Actions ───────────────────────────────────────────────
+      case 'QUICK_ACTION': handleQuickAction(transcript, command.action, command.appName);         break;
     }
   }, [voiceState, transcript]);
 
@@ -625,6 +680,144 @@ export default function VoiceScreen() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // v0.7 MEDIA CONTROL handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleMedia(
+    raw: string,
+    action: 'play' | 'pause' | 'resume' | 'next' | 'previous' | 'stop' | 'vol_up' | 'vol_down',
+  ) {
+    const labelMap: Record<string, string> = {
+      play: 'Play Music', pause: 'Pause Music', resume: 'Resume Music',
+      next: 'Next Track', previous: 'Previous Track', stop: 'Stop Music',
+      vol_up: 'Media Volume Up', vol_down: 'Media Volume Down',
+    };
+    const label = labelMap[action];
+    setActivePanel('media');
+    setMediaFeedback({ phase: 'working', transcript: raw, commandLabel: label });
+
+    let result;
+    if (action === 'play')     result = await mediaPlay();
+    else if (action === 'pause')    result = await mediaPause();
+    else if (action === 'resume')   result = await mediaPlayPause();
+    else if (action === 'next')     result = await mediaNext();
+    else if (action === 'previous') result = await mediaPrevious();
+    else if (action === 'stop')     result = await mediaStop();
+    else if (action === 'vol_up')   result = await mediaVolumeUp();
+    else result = await mediaVolumeDown();
+
+    speak(result.message);
+    if (result.success) {
+      const phase = result.openedSettings ? 'settings' : 'success';
+      setMediaFeedback({ phase, transcript: raw, commandLabel: label, detail: result.message });
+    } else {
+      setMediaFeedback({ phase: 'failed', transcript: raw, commandLabel: label, detail: result.message });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // v0.7 NOTIFICATION READER handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleNotifications(
+    raw: string,
+    appFilter?: string,
+    mode?: 'latest' | 'messages' | 'clear',
+  ) {
+    setActivePanel('notifications');
+    setNotifFeedback({ phase: 'reading', transcript: raw });
+
+    let result;
+    if (mode === 'clear')    result = await clearAllNotifications();
+    else if (mode === 'latest')   result = await readLatestNotification();
+    else if (mode === 'messages') result = await checkNewMessages();
+    else if (appFilter)      result = await readAppNotifications(appFilter);
+    else                     result = await readAllNotifications();
+
+    speak(result.message);
+    if (result.needsPermission) {
+      setNotifFeedback({ phase: 'permission', transcript: raw, message: result.message, items: result.items });
+    } else if (result.success && result.items) {
+      setNotifFeedback({ phase: 'items', transcript: raw, items: result.items });
+    } else {
+      setNotifFeedback({ phase: 'failed', transcript: raw, message: result.message });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // v0.7 DEVICE INFO handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleDeviceInfo(
+    raw: string,
+    infoType: 'storage' | 'ram' | 'battery_health' | 'charging' | 'model' | 'android_version' | 'datetime' | 'all',
+  ) {
+    const labelMap: Record<string, string> = {
+      storage: 'Storage Info', ram: 'RAM Info', battery_health: 'Battery Health',
+      charging: 'Charging Status', model: 'Device Model',
+      android_version: 'Android Version', datetime: 'Date & Time', all: 'Device Info',
+    };
+    const queryLabel = labelMap[infoType] ?? 'Device Info';
+    setActivePanel('device_info');
+    setDevInfoFeedback({ phase: 'loading', transcript: raw, queryLabel });
+
+    let result;
+    if (infoType === 'storage')         result = await getStorageInfo();
+    else if (infoType === 'ram')        result = await getRamInfo();
+    else if (infoType === 'battery_health' || infoType === 'charging') result = await getBatteryHealth();
+    else if (infoType === 'model')      result = await getDeviceModel();
+    else if (infoType === 'android_version') result = await getAndroidVersion();
+    else if (infoType === 'datetime')   result = getDateTime();
+    else                                result = await getAllDeviceInfo();
+
+    speak(result.message);
+    if (result.success) {
+      setDevInfoFeedback({ phase: 'success', transcript: raw, queryLabel, message: result.message, info: result.info });
+    } else {
+      setDevInfoFeedback({ phase: 'failed', transcript: raw, queryLabel, message: result.message });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // v0.7 QUICK ACTION handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleQuickAction(
+    raw: string,
+    action: 'recent_apps' | 'go_home' | 'open_notifications' | 'quick_settings' | 'app_info' | 'wifi_settings' | 'bluetooth_settings' | 'display_settings',
+    appName?: string,
+  ) {
+    const labelMap: Record<string, string> = {
+      recent_apps: 'Recent Apps', go_home: 'Go Home',
+      open_notifications: 'Open Notifications', quick_settings: 'Quick Settings',
+      app_info: `App Info${appName ? ` (${appName})` : ''}`,
+      wifi_settings: 'Wi-Fi Settings', bluetooth_settings: 'Bluetooth Settings',
+      display_settings: 'Display Settings',
+    };
+    const actionLabel = labelMap[action] ?? action;
+    setActivePanel('quick_action');
+    setQaFeedback({ phase: 'working', transcript: raw, actionLabel });
+
+    let result;
+    if (action === 'recent_apps')         result = await openRecentApps();
+    else if (action === 'go_home')        result = await goHome();
+    else if (action === 'open_notifications') result = await openNotifications();
+    else if (action === 'quick_settings') result = await openQuickSettings();
+    else if (action === 'app_info')       result = await openAppInfo(appName ?? '');
+    else if (action === 'wifi_settings')  result = await openWifiSettings();
+    else if (action === 'bluetooth_settings') result = await openBluetoothSettings();
+    else result = await openDisplaySettings();
+
+    speak(result.message);
+    if (result.success) {
+      const phase = result.openedSettings ? 'settings' : 'success';
+      setQaFeedback({ phase, transcript: raw, actionLabel, detail: result.message });
+    } else {
+      setQaFeedback({ phase: 'failed', transcript: raw, actionLabel, detail: result.message });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Mic button handler
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -643,6 +836,10 @@ export default function VoiceScreen() {
       setReminderFeedback({ phase: 'none' });
       setCalendarFeedback({ phase: 'none' });
       setDeviceFeedback({ phase: 'none' });
+      setMediaFeedback({ phase: 'none' });
+      setNotifFeedback({ phase: 'none' });
+      setDevInfoFeedback({ phase: 'none' });
+      setQaFeedback({ phase: 'none' });
       pendingSmsRef.current = null;
       stopSpeaking();
       resetVoice();
@@ -657,6 +854,10 @@ export default function VoiceScreen() {
       setReminderFeedback({ phase: 'none' });
       setCalendarFeedback({ phase: 'none' });
       setDeviceFeedback({ phase: 'none' });
+      setMediaFeedback({ phase: 'none' });
+      setNotifFeedback({ phase: 'none' });
+      setDevInfoFeedback({ phase: 'none' });
+      setQaFeedback({ phase: 'none' });
       pendingSmsRef.current = null;
       await startListening();
     } else if (voiceState === 'processing') {
@@ -673,7 +874,11 @@ export default function VoiceScreen() {
 
   const HINTS = [
     '"Set alarm for 6 AM"  ·  "Start a 10 minute timer"',
-    '"Turn on flashlight"  ·  "Torch off"',
+    '"Play music"  ·  "Next song"  ·  "Pause music"',
+    '"Read my notifications"  ·  "Read WhatsApp notifications"',
+    '"Storage remaining"  ·  "Device model"  ·  "What time is it"',
+    '"Go home"  ·  "Open recent apps"  ·  "Quick settings"',
+    '"Hello"  ·  "Thank you"  ·  "Tell me a joke"',
     '"Volume up"  ·  "Set volume to 50 percent"',
     '"Battery percentage"  ·  "Max brightness"',
     '"Call Mom"  ·  "Open WhatsApp"  ·  "Start stopwatch"',
@@ -774,6 +979,18 @@ export default function VoiceScreen() {
 
         {/* ── Device control feedback (v0.6) ── */}
         {activePanel === 'device' && <DeviceControlFeedback state={deviceFeedback} />}
+
+        {/* ── Media control feedback (v0.7) ── */}
+        {activePanel === 'media' && <MediaFeedback state={mediaFeedback} />}
+
+        {/* ── Notification reader feedback (v0.7) ── */}
+        {activePanel === 'notifications' && <NotificationFeedback state={notifFeedback} />}
+
+        {/* ── Device info feedback (v0.7) ── */}
+        {activePanel === 'device_info' && <DeviceInfoFeedback state={devInfoFeedback} />}
+
+        {/* ── Quick action feedback (v0.7) ── */}
+        {activePanel === 'quick_action' && <QuickActionFeedback state={qaFeedback} />}
 
         {/* ── Idle hints ── */}
         {showHint && (

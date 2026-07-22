@@ -100,7 +100,25 @@ export type ParsedCommand =
   | { type: 'WIFI_ON' }
   | { type: 'WIFI_OFF' }
   | { type: 'BLUETOOTH_ON' }
-  | { type: 'BLUETOOTH_OFF' };
+  | { type: 'BLUETOOTH_OFF' }
+  // ── v0.7 Media Controls ────────────────────────────────────────────────────
+  | { type: 'MEDIA_PLAY' }
+  | { type: 'MEDIA_PAUSE' }
+  | { type: 'MEDIA_RESUME' }
+  | { type: 'MEDIA_NEXT' }
+  | { type: 'MEDIA_PREVIOUS' }
+  | { type: 'MEDIA_STOP' }
+  | { type: 'MEDIA_VOLUME_UP' }
+  | { type: 'MEDIA_VOLUME_DOWN' }
+  // ── v0.7 Notification Reader ───────────────────────────────────────────────
+  | { type: 'READ_NOTIFICATIONS'; appFilter?: string }
+  | { type: 'READ_LATEST_NOTIFICATION' }
+  | { type: 'CHECK_MESSAGES' }
+  | { type: 'CLEAR_NOTIFICATIONS' }
+  // ── v0.7 Device Information ────────────────────────────────────────────────
+  | { type: 'DEVICE_INFO'; infoType: 'storage' | 'ram' | 'battery_health' | 'charging' | 'model' | 'android_version' | 'datetime' | 'all' }
+  // ── v0.7 Quick Actions ─────────────────────────────────────────────────────
+  | { type: 'QUICK_ACTION'; action: 'recent_apps' | 'go_home' | 'open_notifications' | 'quick_settings' | 'app_info' | 'wifi_settings' | 'bluetooth_settings' | 'display_settings'; appName?: string };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // App Registry
@@ -212,10 +230,15 @@ export function parseCommand(text: string): ParsedCommand | null {
     tryBrightnessMin(cleaned)  ??
     tryBrightnessMax(cleaned)  ??
     tryBatteryStatus(cleaned)  ??
-    tryWifiOn(cleaned)         ??
-    tryWifiOff(cleaned)        ??
-    tryBluetoothOn(cleaned)    ??
-    tryBluetoothOff(cleaned)   ??
+    tryWifiOn(cleaned)          ??
+    tryWifiOff(cleaned)         ??
+    tryBluetoothOn(cleaned)     ??
+    tryBluetoothOff(cleaned)    ??
+    // ── v0.7 new commands (checked after all v0.6) ──────────────────────────
+    tryMediaControl(cleaned)    ??
+    tryReadNotifications(cleaned) ??
+    tryDeviceInfo(cleaned)      ??
+    tryQuickAction(cleaned)     ??
     null
   );
 }
@@ -542,5 +565,103 @@ function extractInlineMsg(rest: string): { contactName: string; message: string 
     const msg  = m[2].trim();
     if (name.length >= 2 && msg.length >= 1) return { contactName: name, message: msg };
   }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.7 parse passes — Media Controls
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const MEDIA_PLAY_KW     = ['play music','play song','play audio','start music','start playing','resume music','resume playback','play'];
+const MEDIA_PAUSE_KW    = ['pause music','pause song','pause playback','pause the music','pause audio'];
+const MEDIA_RESUME_KW   = ['resume music','resume playback','resume the music','continue music','unpause music'];
+const MEDIA_NEXT_KW     = ['next song','next track','skip song','skip track','play next','forward song','next music'];
+const MEDIA_PREV_KW     = ['previous song','previous track','go back song','last song','play previous','back song'];
+const MEDIA_STOP_KW     = ['stop music','stop song','stop playback','stop the music','stop audio'];
+const MEDIA_VOL_UP_KW   = ['media volume up','increase media volume','louder music','music louder','turn up music'];
+const MEDIA_VOL_DOWN_KW = ['media volume down','decrease media volume','quieter music','music quieter','turn down music'];
+
+function tryMediaControl(c: string): ParsedCommand | null {
+  // Order matters: check more-specific before less-specific
+  if (MEDIA_RESUME_KW.some(kw  => c.includes(kw))) return { type: 'MEDIA_RESUME' };
+  if (MEDIA_PAUSE_KW.some(kw   => c.includes(kw))) return { type: 'MEDIA_PAUSE' };
+  if (MEDIA_NEXT_KW.some(kw    => c.includes(kw))) return { type: 'MEDIA_NEXT' };
+  if (MEDIA_PREV_KW.some(kw    => c.includes(kw))) return { type: 'MEDIA_PREVIOUS' };
+  if (MEDIA_STOP_KW.some(kw    => c.includes(kw))) return { type: 'MEDIA_STOP' };
+  if (MEDIA_VOL_UP_KW.some(kw  => c.includes(kw))) return { type: 'MEDIA_VOLUME_UP' };
+  if (MEDIA_VOL_DOWN_KW.some(kw=> c.includes(kw))) return { type: 'MEDIA_VOLUME_DOWN' };
+  if (MEDIA_PLAY_KW.some(kw    => c.includes(kw))) return { type: 'MEDIA_PLAY' };
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.7 parse passes — Notification Reader
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const READ_NOTIF_KW       = ['read my notifications','read notifications','show my notifications','show notifications','read all notifications','what are my notifications'];
+const READ_LATEST_KW      = ['read latest notification','read last notification','read the latest','latest notification','last notification','most recent notification'];
+const CHECK_MESSAGES_KW   = ['any new messages','any messages','check messages','new messages','do i have messages','unread messages'];
+const CLEAR_NOTIF_KW      = ['clear all notifications','dismiss all notifications','clear notifications','dismiss notifications','clear all dismissible'];
+const READ_APP_NOTIF_PAT  = /^read\s+(\w+)\s+notifications?$/;
+
+function tryReadNotifications(c: string): ParsedCommand | null {
+  if (CLEAR_NOTIF_KW.some(kw   => c.includes(kw))) return { type: 'CLEAR_NOTIFICATIONS' };
+  if (READ_LATEST_KW.some(kw   => c.includes(kw))) return { type: 'READ_LATEST_NOTIFICATION' };
+  if (CHECK_MESSAGES_KW.some(kw=> c.includes(kw))) return { type: 'CHECK_MESSAGES' };
+
+  // "Read WhatsApp notifications" / "Read Gmail notifications"
+  const appMatch = c.match(READ_APP_NOTIF_PAT);
+  if (appMatch) return { type: 'READ_NOTIFICATIONS', appFilter: appMatch[1] };
+
+  if (READ_NOTIF_KW.some(kw    => c.includes(kw))) return { type: 'READ_NOTIFICATIONS' };
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.7 parse passes — Device Information
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const STORAGE_KW          = ['storage remaining','storage left','available storage','free storage','how much storage','disk space','space remaining','internal storage'];
+const RAM_KW              = ['ram usage','available memory','free memory','how much ram','memory usage','how much memory','ram remaining'];
+const BATTERY_HEALTH_KW   = ['battery health','charging status','is it charging','is my phone charging','battery condition'];
+const MODEL_KW            = ['device model','my phone model','what phone','which phone','phone model','what device','which device','my device'];
+const ANDROID_VER_KW      = ['android version','what android','which android','os version','operating system version','what version'];
+const DATETIME_KW         = ['current date','todays date','what day is it','what is today','what date is it','current time','what time','what time is it','date and time'];
+const ALL_DEVICE_KW       = ['device info','device information','system info','system information','about my phone','phone specs'];
+
+function tryDeviceInfo(c: string): ParsedCommand | null {
+  if (STORAGE_KW.some(kw        => c.includes(kw))) return { type: 'DEVICE_INFO', infoType: 'storage' };
+  if (RAM_KW.some(kw            => c.includes(kw))) return { type: 'DEVICE_INFO', infoType: 'ram' };
+  if (BATTERY_HEALTH_KW.some(kw => c.includes(kw))) return { type: 'DEVICE_INFO', infoType: 'battery_health' };
+  if (MODEL_KW.some(kw          => c.includes(kw))) return { type: 'DEVICE_INFO', infoType: 'model' };
+  if (ANDROID_VER_KW.some(kw    => c.includes(kw))) return { type: 'DEVICE_INFO', infoType: 'android_version' };
+  if (DATETIME_KW.some(kw       => c.includes(kw))) return { type: 'DEVICE_INFO', infoType: 'datetime' };
+  if (ALL_DEVICE_KW.some(kw     => c.includes(kw))) return { type: 'DEVICE_INFO', infoType: 'all' };
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v0.7 parse passes — Quick Actions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const RECENT_APPS_KW      = ['open recent apps','show recent apps','recent apps','switch apps','app switcher','multitasking'];
+const GO_HOME_KW          = ['go home','go to home','home screen','take me home','show home screen'];
+const OPEN_NOTIFS_KW      = ['open notifications','show notification bar','pull down notifications','open notification shade','notification panel'];
+const QUICK_SETTINGS_KW   = ['open quick settings','quick settings','toggle settings panel','pull down settings'];
+const WIFI_SETTINGS_KW    = ['open wifi settings','wifi settings','wi-fi settings','open wi-fi settings'];
+const BT_SETTINGS_KW      = ['open bluetooth settings','bluetooth settings'];
+const DISPLAY_SETTINGS_KW = ['open display settings','display settings','screen settings','open screen settings'];
+const APP_INFO_PAT        = /^open\s+app\s+info\s+(?:for\s+)?(\w+)$/;
+
+function tryQuickAction(c: string): ParsedCommand | null {
+  if (RECENT_APPS_KW.some(kw      => c.includes(kw))) return { type: 'QUICK_ACTION', action: 'recent_apps' };
+  if (GO_HOME_KW.some(kw          => c.includes(kw))) return { type: 'QUICK_ACTION', action: 'go_home' };
+  if (OPEN_NOTIFS_KW.some(kw      => c.includes(kw))) return { type: 'QUICK_ACTION', action: 'open_notifications' };
+  if (QUICK_SETTINGS_KW.some(kw   => c.includes(kw))) return { type: 'QUICK_ACTION', action: 'quick_settings' };
+  if (WIFI_SETTINGS_KW.some(kw    => c.includes(kw))) return { type: 'QUICK_ACTION', action: 'wifi_settings' };
+  if (BT_SETTINGS_KW.some(kw      => c.includes(kw))) return { type: 'QUICK_ACTION', action: 'bluetooth_settings' };
+  if (DISPLAY_SETTINGS_KW.some(kw => c.includes(kw))) return { type: 'QUICK_ACTION', action: 'display_settings' };
+  const appInfoMatch = c.match(APP_INFO_PAT);
+  if (appInfoMatch) return { type: 'QUICK_ACTION', action: 'app_info', appName: appInfoMatch[1] };
   return null;
 }
