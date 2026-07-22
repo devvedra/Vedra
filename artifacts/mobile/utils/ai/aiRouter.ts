@@ -67,7 +67,7 @@ export async function routeToAI(
       handled: true,
       source: 'offline',
       response:
-        "I'm in offline mode. I can still help with device commands — opening apps, calls, alarms, flashlight, reminders, and more. Say something like "Open WhatsApp" or "Set an alarm for 7 AM".",
+        "I'm in offline mode. I can still help with device commands — opening apps, calls, alarms, flashlight, reminders, and more. Say something like 'Open WhatsApp' or 'Set an alarm for 7 AM'.",
     };
   }
 

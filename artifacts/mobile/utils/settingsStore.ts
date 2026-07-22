@@ -56,8 +56,9 @@ export async function getSettings(): Promise<VedraSettings> {
   if (_cache) return _cache;
   try {
     const raw = await AsyncStorage.getItem(K.SETTINGS);
-    _cache = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
-    return _cache;
+    const loaded: VedraSettings = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
+    _cache = loaded;
+    return loaded;
   } catch {
     return { ...DEFAULTS };
   }

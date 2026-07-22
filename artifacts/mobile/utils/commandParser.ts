@@ -62,7 +62,7 @@ export const APP_REGISTRY_PUBLIC: AppDefinition[] = [
   { displayName: 'Chrome',      packageName: 'com.android.chrome',      keywords: ['chrome', 'browser', 'google chrome'] },
   { displayName: 'Calculator',  packageOptions: ['com.google.android.calculator', 'com.samsung.android.calculator', 'com.miui.calculator'], keywords: ['calculator', 'calc'] },
   { displayName: 'Calendar',    packageName: 'com.google.android.calendar', keywords: ['google calendar'] },
-  { displayName: 'Clock',       packageName: 'com.google.android.deskclock', packages: ['com.google.android.deskclock', 'com.samsung.android.app.clockpackage'], keywords: ['clock'] },
+  { displayName: 'Clock',       packageOptions: ['com.google.android.deskclock', 'com.samsung.android.app.clockpackage'], keywords: ['clock'] },
   { displayName: 'Contacts',    packageName: 'com.google.android.contacts', keywords: ['contacts'] },
   { displayName: 'Phone',       packageName: 'com.google.android.dialer', keywords: ['phone app', 'dialer'] },
   { displayName: 'Messages',    packageName: 'com.google.android.apps.messaging', keywords: ['messages app', 'sms app'] },
@@ -260,7 +260,7 @@ function tryAlarm(c: string): ParsedCommand | null {
   if (SET_ALARM_KW.some(kw => c.includes(kw))) {
     const parsed = timeParser.parseTimePhrase(c);
     if (parsed) {
-      const d = new Date(parsed.ms);
+      const d = parsed.date;
       return { type: 'SET_ALARM', hour: d.getHours(), minute: d.getMinutes(), timeDisplay: parsed.display };
     }
   }
@@ -279,13 +279,13 @@ function tryTimer(c: string): ParsedCommand | null {
 
   if (START_TIMER_KW.some(kw  => c.includes(kw))) {
     const dur = timeParser.parseDuration(c);
-    if (dur) return { type: 'START_TIMER', totalMs: dur.ms, durationDisplay: dur.display };
+    if (dur) return { type: 'START_TIMER', totalMs: dur.totalMs, durationDisplay: dur.display };
   }
 
   // "10 minute timer" / "5 second timer" without a prefix
   const dur = timeParser.parseDuration(c);
   if (dur && (c.includes('timer') || c.includes('countdown'))) {
-    return { type: 'START_TIMER', totalMs: dur.ms, durationDisplay: dur.display };
+    return { type: 'START_TIMER', totalMs: dur.totalMs, durationDisplay: dur.display };
   }
   return null;
 }
@@ -325,9 +325,9 @@ function tryReminder(c: string): ParsedCommand | null {
       // Strip the "remind me to" preamble and time portion to get the message
       let msg = c;
       for (const kw of SET_REMINDER_KW) msg = msg.replace(kw, '');
-      msg = msg.replace(parsed.matchedText ?? '', '').replace(/\s*(at|on|by|in)\s*$/, '').trim();
+      msg = msg.replace(/\b(?:at|on|by|in)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, '').replace(/\s*(at|on|by|in)\s*$/, '').trim();
       if (!msg) msg = 'reminder';
-      return { type: 'SET_REMINDER', message: msg, timeDisplay: parsed.display, triggerMs: parsed.ms };
+      return { type: 'SET_REMINDER', message: msg, timeDisplay: parsed.display, triggerMs: parsed.date.getTime() };
     }
   }
   return null;
@@ -347,10 +347,10 @@ function tryCalendar(c: string): ParsedCommand | null {
     const parsed = timeParser.parseTimePhrase(c);
     let title = c;
     for (const kw of CREATE_EVENT_KW) title = title.replace(kw, '');
-    if (parsed) title = title.replace(parsed.matchedText ?? '', '');
+    if (parsed) title = title.replace(/\b(?:at|on|for)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, '');
     title = title.replace(/\s*(at|on|for|from|to)\s*$/g, '').replace(/^\s*(at|on|for)\s+/, '').trim();
     if (!title) title = 'Event';
-    const startMs = parsed?.ms ?? Date.now();
+    const startMs = parsed?.date.getTime() ?? Date.now();
     const endMs   = startMs + 60 * 60 * 1000; // default 1 hour
     return { type: 'CREATE_EVENT', title, timeDisplay: parsed?.display ?? 'scheduled', startMs, endMs };
   }

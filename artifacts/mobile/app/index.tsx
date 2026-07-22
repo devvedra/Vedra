@@ -142,7 +142,8 @@ type ActivePanel =
   | 'quick_action'
   | 'memory'
   | 'study'
-  | 'small_talk';
+  | 'small_talk'
+  | 'ai';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Component
@@ -178,6 +179,11 @@ export default function VoiceScreen() {
   const [memoryFeedback,   setMemoryFeedback]   = useState<MemoryFeedbackState>({ phase: 'none' });
   const [studyFeedback,    setStudyFeedback]    = useState<StudyFeedbackState>({ phase: 'none' });
   const [smallTalkFeedback,setSmallTalkFeedback]= useState<SmallTalkState>({ phase: 'none' });
+
+  // ── v0.9 AI state ────────────────────────────────────────────────────────────
+  const [aiFeedback,        setAiFeedback]        = useState<AIFeedbackState>({ phase: 'none' });
+  const [conversationHistory, setConversationHistory] = useState<ConversationTurn[]>([]);
+  const [showHistory,       setShowHistory]       = useState(false);
 
   // ── Refs ─────────────────────────────────────────────────────────────────────
   const lastProcessed = useRef('');
@@ -348,12 +354,54 @@ export default function VoiceScreen() {
       return;
     }
 
-    // ── Fallback 3: Unknown command ───────────────────────────────────────────
-    const suggestion = 'Try: "Set alarm for 7 AM", "Play music", "Open WhatsApp", or "What\'s my battery?"';
-    setActivePanel('small_talk');
-    setSmallTalkFeedback({ phase: 'unknown', transcript, suggestion });
-    speak(`I didn't catch that. ${suggestion}`);
+    // ── Fallback 3: Cloud AI (if enabled) ────────────────────────────────────
+    handleAIQuery(transcript);
   }, [voiceState, transcript]);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Load conversation history on mount
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  useEffect(() => {
+    getConversationHistory().then(setConversationHistory).catch(() => {});
+  }, []);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // v0.9 Handler — AI Query (cloud fallback + graceful offline)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function handleAIQuery(raw: string) {
+    setActivePanel('ai');
+    setAiFeedback({ phase: 'thinking' });
+
+    const result = await routeToAI(raw);
+
+    // Determine display source
+    const source =
+      result.isError      ? 'error'   :
+      result.source === 'online' ? 'online' : 'offline';
+
+    setAiFeedback({
+      phase: result.isError ? 'error' : 'response',
+      response: result.response,
+      source,
+      providerName: result.providerName,
+    });
+
+    speak(result.response);
+
+    // Persist to conversation history
+    await addConversationTurn(raw, result.response, result.source, result.providerName);
+    const updated = await getConversationHistory();
+    setConversationHistory(updated);
+  }
+
+  // ── Clear conversation history ────────────────────────────────────────────
+
+  const handleClearHistory = useCallback(async () => {
+    await clearConversationHistory();
+    setConversationHistory([]);
+  }, []);
 
   // ═══════════════════════════════════════════════════════════════════════════
   // v0.1 Handlers — Open App, Call, SMS
@@ -925,6 +973,7 @@ export default function VoiceScreen() {
     setMemoryFeedback({ phase: 'none' });
     setStudyFeedback({ phase: 'none' });
     setSmallTalkFeedback({ phase: 'none' });
+    setAiFeedback({ phase: 'none' });
     pendingSmsRef.current = null;
   }, []);
 
@@ -983,11 +1032,20 @@ export default function VoiceScreen() {
 
       {/* ── Header ── */}
       <View style={styles.header}>
-        <View style={styles.badgeRow}>
-          <View style={[styles.badge, { backgroundColor: 'rgba(124,58,237,0.18)', borderColor: 'rgba(124,58,237,0.35)' }]}>
-            <View style={[styles.badgeDot, { backgroundColor: colors.accent }]} />
-            <Text style={[styles.badgeText, { color: colors.accent }]}>AI ASSISTANT</Text>
+        <View style={styles.headerTopRow}>
+          <View style={styles.badgeRow}>
+            <View style={[styles.badge, { backgroundColor: 'rgba(124,58,237,0.18)', borderColor: 'rgba(124,58,237,0.35)' }]}>
+              <View style={[styles.badgeDot, { backgroundColor: colors.accent }]} />
+              <Text style={[styles.badgeText, { color: colors.accent }]}>AI ASSISTANT</Text>
+            </View>
           </View>
+          <TouchableOpacity
+            onPress={() => router.push('/settings')}
+            hitSlop={12}
+            style={styles.settingsBtn}
+          >
+            <Text style={[styles.settingsIcon, { color: colors.mutedForeground }]}>⚙</Text>
+          </TouchableOpacity>
         </View>
         <Text style={[styles.appName, { color: colors.foreground }]}>VEDRA</Text>
         <Text style={[styles.appTagline, { color: colors.mutedForeground }]}>
@@ -1058,6 +1116,28 @@ export default function VoiceScreen() {
         )}
         {activePanel === 'small_talk' && <SmallTalkFeedback state={smallTalkFeedback} />}
 
+        {/* v0.9 AI panel */}
+        {activePanel === 'ai' && <AIFeedback state={aiFeedback} />}
+
+        {/* v0.9 Conversation history toggle */}
+        {conversationHistory.length > 0 && (
+          <TouchableOpacity
+            onPress={() => setShowHistory(prev => !prev)}
+            style={[styles.historyToggle, { borderColor: colors.border }]}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.historyToggleText, { color: colors.mutedForeground }]}>
+              {showHistory ? 'Hide History' : `Show History (${conversationHistory.length})`}
+            </Text>
+          </TouchableOpacity>
+        )}
+        {showHistory && conversationHistory.length > 0 && (
+          <ConversationHistory
+            turns={conversationHistory}
+            onClear={handleClearHistory}
+          />
+        )}
+
         {/* Idle hints */}
         {showHint && (
           <View style={styles.emptyCard}>
@@ -1081,6 +1161,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 24 },
 
   header: { alignItems: 'center', paddingTop: 20, gap: 8 },
+  headerTopRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    width: '100%', position: 'relative',
+  },
   badgeRow: { marginBottom: 4 },
   badge: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
@@ -1091,6 +1175,8 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: 10, fontFamily: 'Inter_600SemiBold', letterSpacing: 1.5 },
   appName: { fontSize: 34, fontFamily: 'Inter_700Bold', letterSpacing: 8 },
   appTagline: { fontSize: 13, fontFamily: 'Inter_400Regular', textAlign: 'center' },
+  settingsBtn: { position: 'absolute', right: 0, top: 0, padding: 4 },
+  settingsIcon: { fontSize: 22 },
 
   centre: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 260 },
   waveContainer: { position: 'absolute', width: '100%', alignItems: 'center' },
@@ -1098,6 +1184,13 @@ const styles = StyleSheet.create({
 
   bottomScroll: { flex: 0 },
   bottomContent: { paddingBottom: 24, gap: 0 },
+
+  historyToggle: {
+    alignSelf: 'center', marginTop: 12,
+    paddingHorizontal: 16, paddingVertical: 8,
+    borderRadius: 20, borderWidth: 1,
+  },
+  historyToggleText: { fontSize: 12, fontFamily: 'Inter_500Medium' },
 
   emptyCard: {
     width: '100%', borderRadius: 16,

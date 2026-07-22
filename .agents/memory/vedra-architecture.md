@@ -1,39 +1,50 @@
 ---
-name: Vedra v0.6 architecture
-description: Module layout, command parser structure, and platform decisions for Vedra mobile app
+name: Vedra v0.9 architecture
+description: Feature modules, hybrid AI wiring, and key platform decisions for Vedra.
 ---
 
-## Key decisions
+# Vedra v0.9 Architecture
 
-**Alarm implementation:** Uses Android `android.intent.action.SET_ALARM` intent via expo-intent-launcher (already installed). Stores metadata in AsyncStorage for listing. Cannot programmatically delete system alarms — opens clock app for user confirmation.
+## Stack
+- Expo SDK 54 / React Native 0.81 / TypeScript / Expo Router / TanStack Query
+- Entry: `artifacts/mobile/app/index.tsx` — single 1200-line screen, all panels in one ScrollView
+- Navigation: `artifacts/mobile/app/settings.tsx` (push via `router.push('/settings')`)
 
-**Timer:** In-app countdown via `useTimerManager` hook polling timerManager every 500ms. Finish notification scheduled via expo-notifications. One active timer at a time (by design).
+## Key architectural decisions
 
-**Stopwatch:** Pure in-memory via stopwatchManager.ts; no persistence. Hook polls at 50ms for centisecond display.
+**Offline-first pipeline (in order):**
+1. `commandParser.ts` (regex keyword fast-path)
+2. `intentEngine.ts` (fuzzy NLU + scoring)
+3. `smallTalk.ts` (rule-based conversational)
+4. `utils/ai/aiRouter.ts` → `routeToAI()` (cloud AI fallback)
 
-**Reminders:** AsyncStorage + expo-notifications for scheduled local notifications. pruneOldReminders() called on app startup in _layout.tsx.
+**Why:** Each layer is tried only if the previous fails. Offline commands never touch the network.
 
-**Calendar:** expo-calendar (added in v0.5). Needs READ_CALENDAR + WRITE_CALENDAR permissions in app.json.
+## v0.9 Hybrid AI wiring (completed)
+- `routeToAI()` is called as Fallback 4 in `index.tsx` via `handleAIQuery(transcript)`
+- `AIFeedback` component renders when `activePanel === 'ai'`
+- `ConversationHistory` component toggles via "Show History (N)" button
+- Settings gear (⚙) in header navigates to settings screen
+- Conversation turns persisted via `conversationManager.ts` → AsyncStorage key `@vedra/conversation_v9`
+- `clearConversationHistory()` wired to Clear button in ConversationHistory component
 
-**Notifications:** expo-notifications (added in v0.5). initNotifications() called in _layout.tsx. Web preview shows deprecation warning — expected, not a bug.
+## Provider system
+- Interface: `utils/ai/aiProvider.ts` (AIProvider, AIMessage, AIResponse)
+- Providers: `utils/ai/providers/openaiProvider.ts`, `geminiProvider.ts`
+- Registry in `utils/ai/aiRouter.ts` → `PROVIDERS` object
+- Add new provider: implement AIProvider, add to PROVIDERS dict — no other changes needed
 
-**Command parser parsing order:** OPEN_APP → CALL_CONTACT → SEND_SMS → SET_ALARM → CANCEL_ALARM → LIST_ALARMS → START_TIMER → CANCEL_TIMER → QUERY_TIMER → STOPWATCH → SET_REMINDER → LIST_REMINDERS → DELETE_REMINDER → CREATE_EVENT → LIST_EVENTS → DELETE_EVENT → FLASHLIGHT_ON/OFF → VOLUME_* → BRIGHTNESS_* → BATTERY_STATUS → WIFI_ON/OFF → BLUETOOTH_ON/OFF.
+## Settings storage
+- `utils/settingsStore.ts` → AsyncStorage key `@vedra/settings_v9`
+- API keys stored separately → `@vedra/api_keys_v9`
+- `cloudAIEnabled: false` by default (offline-first)
 
-**Why:** Device controls come last — they use broad keywords ("on"/"off") that could conflict with earlier commands if checked first. Stopwatch reset/resume/pause parsed before start/stop to avoid partial keyword matches.
+## TypeScript fixes applied (v0.9)
+- `commandParser.ts`: `packages` → `packageOptions` on Clock entry; `dur.ms` → `dur.totalMs`; `parsed.ms` → `parsed.date.getTime()`; removed `parsed.matchedText` (doesn't exist on ParsedAbsoluteTime)
+- `settingsStore.ts`: null-safety fix on `getSettings()` return
+- `utils/ai/aiRouter.ts`: smart-quotes inside double-quoted string → single quotes
 
-**v0.6 packages added:** expo-battery@~10.0.8, expo-brightness@~14.0.8, react-native-torch@^1.2.0, react-native-volume-manager@^2.0.8. All device control utils use dynamic imports so web/iOS don't crash at load time.
-
-**Wi-Fi / Bluetooth:** Android 10+ blocks direct toggle. Always open Settings via expo-intent-launcher (already installed). Never attempt direct toggle — it will silently fail or throw.
-
-**Brightness:** expo-brightness setBrightnessAsync controls app-level brightness without special permission. setSystemBrightnessAsync needs WRITE_SETTINGS (special permission in Android settings). We try system first, fall back to app-level.
-
-## Module locations
-- `utils/timeParser.ts` — natural language time/duration parser (no deps)
-- `utils/notificationManager.ts` — expo-notifications wrapper
-- `utils/alarmManager.ts` — Android alarm intent + AsyncStorage
-- `utils/timerManager.ts` — timer state + notifications
-- `utils/stopwatchManager.ts` — in-memory stopwatch state machine
-- `utils/reminderManager.ts` — reminder storage + notifications
-- `utils/calendarManager.ts` — expo-calendar wrapper
-- `hooks/useTimerManager.ts` — React hook driving timer UI
-- `hooks/useStopwatch.ts` — React hook driving stopwatch UI (50ms tick)
+## Known limitations
+- Voice recognition requires native APK build (not available in web preview)
+- Voice speed/pitch stored in settings but not yet applied to expo-speech (deferred)
+- No AbortController on in-flight AI requests when user taps mic again (deferred)
