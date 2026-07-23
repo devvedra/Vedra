@@ -62,7 +62,14 @@
           "sounds": []
         }
       ],
-      "expo-calendar"
+      "expo-calendar",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Vedra needs the microphone to hear your voice commands.",
+          "speechRecognitionPermission": "Vedra listens to your voice so it can understand and respond to you."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

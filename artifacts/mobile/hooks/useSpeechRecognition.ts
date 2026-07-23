@@ -1,35 +1,27 @@
 /**
  * useSpeechRecognition
  *
- * Wraps @react-native-voice/voice to provide a clean state machine for
- * Android's SpeechRecognizer API.
+ * Wraps expo-speech-recognition to provide a clean state machine for
+ * Android's SpeechRecognizer API (and iOS SFSpeechRecognizer / Web Speech API).
  *
  * States:
  *   idle             → ready to start
  *   listening        → microphone open, waiting for speech
- *   processing       → speech captured, waiting for result
+ *   processing       → speech captured, waiting for final result
  *   result           → transcript ready
  *   error            → recognition error (message in `error`)
- *   permission_denied → mic permission was refused
- *   unavailable      → native module not loaded (Expo Go / web preview)
+ *   permission_denied → mic / speech-recognition permission was refused
+ *   unavailable      → reserved for future use; not emitted by this implementation
  *
- * The hook requests RECORD_AUDIO on Android before starting.
- * It prefers offline recognition when the device supports it.
+ * The hook requests RECORD_AUDIO + SPEECH_RECOGNITION permissions before
+ * starting. On Android it prefers on-device recognition when available.
  */
 
-import { useState, useEffect, useCallback } from 'react';
-import { Platform, PermissionsAndroid } from 'react-native';
-
-// ── Dynamic import guard ──────────────────────────────────────────────────────
-// @react-native-voice/voice requires native linking and is NOT available in
-// Expo Go. We load it dynamically so the UI still renders in the web preview.
-let Voice: any = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  Voice = require('@react-native-voice/voice').default;
-} catch {
-  Voice = null;
-}
+import { useState, useCallback } from 'react';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -40,7 +32,7 @@ export type RecognitionState =
   | 'result'
   | 'error'
   | 'permission_denied'
-  | 'unavailable';
+  | 'unavailable'; // kept in the union for component compatibility
 
 export interface SpeechRecognitionResult {
   /** Current recognition state */
@@ -62,139 +54,109 @@ export interface SpeechRecognitionResult {
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useSpeechRecognition(): SpeechRecognitionResult {
-  const [state, setState] = useState<RecognitionState>(
-    Voice ? 'idle' : 'unavailable',
-  );
+  const [state, setState] = useState<RecognitionState>('idle');
   const [transcript, setTranscript] = useState('');
   const [partialTranscript, setPartialTranscript] = useState('');
   const [error, setError] = useState('');
 
-  // ── Register Voice event listeners ─────────────────────────────────────────
-  useEffect(() => {
-    if (!Voice) return;
+  // ── Event: recognition session started ────────────────────────────────────
+  useSpeechRecognitionEvent('start', () => {
+    setState('listening');
+  });
 
-    Voice.onSpeechStart = () => {
-      setState('listening');
-    };
+  // ── Event: session ended (mic closed) ─────────────────────────────────────
+  useSpeechRecognitionEvent('end', () => {
+    setState((prev) =>
+      prev === 'listening' || prev === 'processing' ? 'processing' : prev,
+    );
+  });
 
-    Voice.onSpeechEnd = () => {
-      // Only move to processing if we haven't already received a result
-      setState((prev) =>
-        prev === 'listening' || prev === 'processing' ? 'processing' : prev,
-      );
-    };
-
-    Voice.onSpeechResults = (e: any) => {
-      const text: string = e?.value?.[0] ?? '';
+  // ── Event: results available ───────────────────────────────────────────────
+  useSpeechRecognitionEvent('result', (event) => {
+    const text: string = event.results?.[0]?.transcript ?? '';
+    if (event.isFinal) {
       if (text) {
         setTranscript(text);
         setPartialTranscript('');
         setState('result');
-      }
-    };
-
-    Voice.onSpeechPartialResults = (e: any) => {
-      const text: string = e?.value?.[0] ?? '';
-      setPartialTranscript(text);
-    };
-
-    Voice.onSpeechError = (e: any) => {
-      const msg: string =
-        e?.error?.message ?? e?.error?.code ?? 'Speech recognition error';
-
-      // "7" is the Android "no match" error — treat as empty result rather
-      // than a hard failure so the UI returns gracefully to idle.
-      if (msg.includes('7') || msg.includes('No match')) {
-        setState('idle');
       } else {
-        setError(msg);
-        setState('error');
+        // Final with empty text — silently return to idle
+        setState('idle');
       }
-    };
+    } else {
+      // Interim / partial result
+      setPartialTranscript(text);
+      setState('listening');
+    }
+  });
 
-    // Cleanup: null out callbacks immediately so no stale setState fires
-    // during the async destroy window.
-    return () => {
-      Voice.onSpeechStart = () => {};
-      Voice.onSpeechEnd = () => {};
-      Voice.onSpeechResults = () => {};
-      Voice.onSpeechPartialResults = () => {};
-      Voice.onSpeechError = () => {};
-      Voice.destroy().catch(() => {});
-    };
-  }, []);
+  // ── Event: error ───────────────────────────────────────────────────────────
+  useSpeechRecognitionEvent('error', (event) => {
+    const code = String(event.error ?? '');
+    const msg  = String(event.message ?? '');
 
-  // ── Request microphone permission (Android only) ────────────────────────────
-  const requestPermission = useCallback(async (): Promise<boolean> => {
-    if (Platform.OS !== 'android') return true; // iOS & web: handled by system
+    // "no-speech" (Android code 7) — user was silent; return to idle gracefully
+    if (code === 'no-speech' || code === '7' || msg.includes('7')) {
+      setState('idle');
+    } else if (code === 'not-allowed' || code === 'service-not-allowed') {
+      setState('permission_denied');
+    } else {
+      setError(msg || code || 'Speech recognition error');
+      setState('error');
+    }
+  });
 
+  // ── Request permissions ────────────────────────────────────────────────────
+  const requestPermissions = useCallback(async (): Promise<boolean> => {
     try {
-      const result = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        {
-          title: 'Microphone Permission',
-          message:
-            'Vedra needs access to your microphone to understand what you say.',
-          buttonPositive: 'Allow',
-          buttonNegative: 'Not now',
-        },
-      );
-      return result === PermissionsAndroid.RESULTS.GRANTED;
+      const { granted } =
+        await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      return granted;
     } catch {
       return false;
     }
   }, []);
 
-  // ── Start listening ─────────────────────────────────────────────────────────
+  // ── Start listening ────────────────────────────────────────────────────────
   const startListening = useCallback(async () => {
-    if (!Voice) {
-      setState('unavailable');
-      return;
-    }
-
     try {
-      // Clear previous session
       setTranscript('');
       setPartialTranscript('');
       setError('');
 
-      const granted = await requestPermission();
+      const granted = await requestPermissions();
       if (!granted) {
         setState('permission_denied');
         return;
       }
 
-      setState('listening');
-
-      // EXTRA_PREFER_OFFLINE asks Android to use on-device recognition when
-      // available — faster and works without internet.
-      await Voice.start('en-US', {
-        EXTRA_PREFER_OFFLINE: true,
+      // Start recognition — prefer on-device when available (offline-first)
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-US',
+        interimResults: true,
+        continuous: false,
+        requiresOnDeviceRecognition: false, // allow cloud fallback if offline model unavailable
+        addsPunctuation: false,
       });
     } catch (err: any) {
       const msg: string = err?.message ?? '';
-      if (msg.includes('not available') || msg.includes('not found')) {
-        setState('unavailable');
-      } else {
-        setError(msg || 'Failed to start recognition');
-        setState('error');
-      }
+      setError(msg || 'Failed to start recognition');
+      setState('error');
     }
-  }, [requestPermission]);
+  }, [requestPermissions]);
 
   // ── Stop listening ─────────────────────────────────────────────────────────
   const stopListening = useCallback(async () => {
-    if (!Voice) return;
     try {
-      await Voice.stop();
+      ExpoSpeechRecognitionModule.stop();
     } catch {
       setState('idle');
     }
   }, []);
 
-  // ── Reset to idle ─────────────────────────────────────────────────────────
+  // ── Reset to idle ──────────────────────────────────────────────────────────
   const reset = useCallback(() => {
-    setState(Voice ? 'idle' : 'unavailable');
+    setState('idle');
     setTranscript('');
     setPartialTranscript('');
     setError('');

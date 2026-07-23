@@ -1037,10 +1037,10 @@ export default function VoiceScreen() {
       stopSpeaking();
       resetVoice();
       setTimeout(startListening, 120);
-    } else if (voiceState === 'idle' || voiceState === 'unavailable') {
+    } else if (voiceState === 'idle' || voiceState === 'unavailable' || voiceState === 'permission_denied') {
       lastProcessed.current = '';
       resetAllPanels();
-      if (voiceState === 'idle') await startListening();
+      await startListening();
     } else if (voiceState === 'processing') {
       // wait for result
     }
@@ -1194,9 +1194,7 @@ export default function VoiceScreen() {
         {showHint && (
           <View style={styles.emptyCard}>
             <Text style={[styles.hint, { color: colors.mutedForeground }]}>
-              {voiceState === 'unavailable'
-                ? 'Build the APK to enable voice recognition on a real device.'
-                : HINTS.join('\n')}
+              {HINTS.join('\n')}
             </Text>
           </View>
         )}

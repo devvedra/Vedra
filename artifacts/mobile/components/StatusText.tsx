@@ -20,7 +20,7 @@ const LABELS: Record<RecognitionState, string> = {
   result:           'Got it',
   error:            'Try again',
   permission_denied:'Mic access denied',
-  unavailable:      'Preview mode',
+  unavailable:      'Not available',
 };
 
 function dotColor(state: RecognitionState, colors: ReturnType<typeof useColors>) {

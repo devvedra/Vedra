@@ -19,6 +19,7 @@
     "expo-notifications": "^0.32.17",
     "expo-sms": "^14.0.8",
     "expo-speech": "^14.0.8",
+    "expo-speech-recognition": "^56.0.1",
     "react-native-torch": "^1.2.0",
     "react-native-volume-manager": "^2.0.8"
   },

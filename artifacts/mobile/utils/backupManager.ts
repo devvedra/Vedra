@@ -143,10 +143,10 @@ export async function listBackups(): Promise<BackupFileInfo[]> {
     if (!dirInfo.exists) return [];
 
     const files = await FileSystem.readDirectoryAsync(dir);
-    const jsonFiles = files.filter(f => f.endsWith('.json'));
+    const jsonFiles = files.filter((f: string) => f.endsWith('.json'));
 
     const infos: BackupFileInfo[] = await Promise.all(
-      jsonFiles.map(async (name) => {
+      jsonFiles.map(async (name: string) => {
         const path = dir + name;
         const info = await FileSystem.getInfoAsync(path);
         return {
