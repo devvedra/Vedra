@@ -17,17 +17,28 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withSequence,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Sidebar from '@/components/Sidebar';
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
@@ -91,7 +102,8 @@ import {
 
 // ── UI Components ─────────────────────────────────────────────────────────────
 import MicButton from '@/components/MicButton';
-import ListeningWave from '@/components/ListeningWave';
+import HeroWave from '@/components/HeroWave';
+import { Feather } from '@expo/vector-icons';
 import StatusText from '@/components/StatusText';
 import TranscriptCard from '@/components/TranscriptCard';
 
@@ -193,24 +205,27 @@ export default function VoiceScreen() {
   const [showHistory,       setShowHistory]       = useState(false);
   const [pluginFeedback,    setPluginFeedback]    = useState<PluginFeedbackState>({ phase: 'none' });
 
+  // ── Sidebar + nav state ───────────────────────────────────────────────────────
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeNav,   setActiveNav]   = useState('ask');
+
+  // ── Text input dock state ─────────────────────────────────────────────────────
+  const [dockText, setDockText] = useState('');
+
   // ── Refs ─────────────────────────────────────────────────────────────────────
   const lastProcessed = useRef('');
   const pendingSmsRef = useRef<{ contact: ContactMatch; message: string } | null>(null);
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Process transcript when recognition completes
+  // Core command pipeline — shared by voice AND text input
   // ═══════════════════════════════════════════════════════════════════════════
 
-  useEffect(() => {
-    if (voiceState !== 'result' || !transcript) return;
-    if (transcript === lastProcessed.current) return;
-    lastProcessed.current = transcript;
-
-    void (async () => {
+  const processTranscript = useCallback(async (text: string) => {
+    if (!text.trim()) return;
 
     // ── Handle pending SMS confirmation ──────────────────────────────────────
     if (pendingSmsRef.current) {
-      const lc = transcript.toLowerCase();
+      const lc = text.toLowerCase();
       if (lc === 'yes' || lc === 'send' || lc === 'confirm' || lc === 'send it') {
         doSendSms(pendingSmsRef.current.contact, pendingSmsRef.current.message);
         return;
@@ -221,142 +236,118 @@ export default function VoiceScreen() {
         speak('Message cancelled.');
         return;
       }
-      // If they spoke a new message body, use it
+      // If they typed/spoke a new message body, use it
       if (lc.length > 3 && !lc.startsWith('send') && !lc.startsWith('cancel')) {
-        const updatedMsg = transcript;
-        pendingSmsRef.current = { ...pendingSmsRef.current, message: updatedMsg };
-        setSmsFeedback(prev => prev.phase !== 'none' ? { ...prev, message: updatedMsg } as any : prev);
+        pendingSmsRef.current = { ...pendingSmsRef.current, message: text };
+        setSmsFeedback(prev => prev.phase !== 'none' ? { ...prev, message: text } as any : prev);
         speak(`Message updated. Say "send" to confirm, or "cancel".`);
         return;
       }
     }
 
     // ── Fast-path: keyword parser ────────────────────────────────────────────
-    const command = parseCommand(transcript);
+    const command = parseCommand(text);
 
     if (command) {
       switch (command.type) {
-        // v0.1
-        case 'OPEN_APP':     handleOpenApp(transcript, command.app);                           break;
-        case 'CALL_CONTACT': handleCallContact(transcript, command.contactName);               break;
-        case 'SEND_SMS':     handleSendSms(transcript, command.contactName, command.message);  break;
-        // v0.2
+        case 'OPEN_APP':     handleOpenApp(text, command.app);                           break;
+        case 'CALL_CONTACT': handleCallContact(text, command.contactName);               break;
+        case 'SEND_SMS':     handleSendSms(text, command.contactName, command.message);  break;
         case 'SET_ALARM':    handleSetAlarm(command.hour, command.minute, command.timeDisplay);break;
-        case 'CANCEL_ALARM': handleCancelAlarm(command.timeDisplay);                           break;
-        case 'LIST_ALARMS':  handleListAlarms();                                               break;
-        case 'START_TIMER':  handleStartTimer(command.totalMs, command.durationDisplay);       break;
-        case 'CANCEL_TIMER': handleCancelTimerCmd();                                           break;
-        case 'QUERY_TIMER':  handleQueryTimer();                                               break;
-        case 'STOPWATCH':    handleStopwatch(command.action);                                  break;
-        // v0.3
+        case 'CANCEL_ALARM': handleCancelAlarm(command.timeDisplay);                     break;
+        case 'LIST_ALARMS':  handleListAlarms();                                         break;
+        case 'START_TIMER':  handleStartTimer(command.totalMs, command.durationDisplay); break;
+        case 'CANCEL_TIMER': handleCancelTimerCmd();                                     break;
+        case 'QUERY_TIMER':  handleQueryTimer();                                         break;
+        case 'STOPWATCH':    handleStopwatch(command.action);                            break;
         case 'SET_REMINDER': handleSetReminder(command.message, command.timeDisplay, command.triggerMs); break;
-        case 'LIST_REMINDERS': handleListReminders();                                          break;
-        case 'DELETE_REMINDER': handleDeleteReminder();                                        break;
+        case 'LIST_REMINDERS':  handleListReminders();                                   break;
+        case 'DELETE_REMINDER': handleDeleteReminder();                                  break;
         case 'CREATE_EVENT': handleCreateEvent(command.title, command.timeDisplay, command.startMs, command.endMs); break;
-        case 'LIST_EVENTS':  handleListEvents();                                               break;
-        case 'DELETE_EVENT': handleDeleteEvent();                                              break;
-        // v0.4/v0.6
-        case 'FLASHLIGHT_ON':    handleFlashlight(transcript, true);                          break;
-        case 'FLASHLIGHT_OFF':   handleFlashlight(transcript, false);                         break;
-        case 'VOLUME_UP':        handleVolumeChange(transcript, 'up');                        break;
-        case 'VOLUME_DOWN':      handleVolumeChange(transcript, 'down');                      break;
-        case 'VOLUME_SET':       handleVolumeChange(transcript, 'set', command.percent);      break;
-        case 'VOLUME_MUTE':      handleVolumeChange(transcript, 'mute');                      break;
-        case 'VOLUME_MAX':       handleVolumeChange(transcript, 'max');                       break;
-        case 'BRIGHTNESS_UP':    handleBrightnessChange(transcript, 'up');                    break;
-        case 'BRIGHTNESS_DOWN':  handleBrightnessChange(transcript, 'down');                  break;
-        case 'BRIGHTNESS_SET':   handleBrightnessChange(transcript, 'set', command.percent);  break;
-        case 'BRIGHTNESS_MIN':   handleBrightnessChange(transcript, 'min');                   break;
-        case 'BRIGHTNESS_MAX':   handleBrightnessChange(transcript, 'max');                   break;
-        case 'BATTERY_STATUS':   handleBattery(transcript);                                   break;
-        case 'WIFI_ON':          handleConnectivity(transcript, 'wifi_on');                   break;
-        case 'WIFI_OFF':         handleConnectivity(transcript, 'wifi_off');                  break;
-        case 'BLUETOOTH_ON':     handleConnectivity(transcript, 'bt_on');                     break;
-        case 'BLUETOOTH_OFF':    handleConnectivity(transcript, 'bt_off');                    break;
-        // v0.7
-        case 'MEDIA_PLAY':       handleMedia(transcript, 'play');     break;
-        case 'MEDIA_PAUSE':      handleMedia(transcript, 'pause');    break;
-        case 'MEDIA_RESUME':     handleMedia(transcript, 'resume');   break;
-        case 'MEDIA_NEXT':       handleMedia(transcript, 'next');     break;
-        case 'MEDIA_PREVIOUS':   handleMedia(transcript, 'previous');break;
-        case 'MEDIA_STOP':       handleMedia(transcript, 'stop');     break;
-        case 'MEDIA_VOLUME_UP':  handleMedia(transcript, 'vol_up');  break;
-        case 'MEDIA_VOLUME_DOWN':handleMedia(transcript, 'vol_down');break;
-        case 'READ_NOTIFICATIONS':       handleNotifications(transcript, command.appFilter);       break;
-        case 'READ_LATEST_NOTIFICATION': handleNotifications(transcript, undefined, 'latest');     break;
-        case 'CHECK_MESSAGES':           handleNotifications(transcript, undefined, 'messages');   break;
-        case 'CLEAR_NOTIFICATIONS':      handleNotifications(transcript, undefined, 'clear');      break;
-        case 'DEVICE_INFO':      handleDeviceInfo(transcript, command.infoType);              break;
-        case 'QUICK_ACTION':     handleQuickAction(transcript, command.action, command.appName);break;
-        // v0.8
-        case 'MEMORY_STORE_NAME': handleMemoryStore(transcript, command.name);               break;
-        case 'MEMORY_QUERY_NAME': handleMemoryQuery(transcript);                             break;
-        case 'STUDY_TIMER':      handleStudyTimer(transcript, command.minutes);              break;
-        case 'STUDY_REMINDERS':  handleStudyReminders(transcript);                           break;
-        case 'STUDY_CHECKLIST':  handleStudyChecklist(transcript);                           break;
+        case 'LIST_EVENTS':  handleListEvents();                                         break;
+        case 'DELETE_EVENT': handleDeleteEvent();                                        break;
+        case 'FLASHLIGHT_ON':    handleFlashlight(text, true);                           break;
+        case 'FLASHLIGHT_OFF':   handleFlashlight(text, false);                          break;
+        case 'VOLUME_UP':        handleVolumeChange(text, 'up');                         break;
+        case 'VOLUME_DOWN':      handleVolumeChange(text, 'down');                       break;
+        case 'VOLUME_SET':       handleVolumeChange(text, 'set', command.percent);       break;
+        case 'VOLUME_MUTE':      handleVolumeChange(text, 'mute');                       break;
+        case 'VOLUME_MAX':       handleVolumeChange(text, 'max');                        break;
+        case 'BRIGHTNESS_UP':    handleBrightnessChange(text, 'up');                     break;
+        case 'BRIGHTNESS_DOWN':  handleBrightnessChange(text, 'down');                   break;
+        case 'BRIGHTNESS_SET':   handleBrightnessChange(text, 'set', command.percent);   break;
+        case 'BRIGHTNESS_MIN':   handleBrightnessChange(text, 'min');                    break;
+        case 'BRIGHTNESS_MAX':   handleBrightnessChange(text, 'max');                    break;
+        case 'BATTERY_STATUS':   handleBattery(text);                                    break;
+        case 'WIFI_ON':          handleConnectivity(text, 'wifi_on');                    break;
+        case 'WIFI_OFF':         handleConnectivity(text, 'wifi_off');                   break;
+        case 'BLUETOOTH_ON':     handleConnectivity(text, 'bt_on');                      break;
+        case 'BLUETOOTH_OFF':    handleConnectivity(text, 'bt_off');                     break;
+        case 'MEDIA_PLAY':       handleMedia(text, 'play');                              break;
+        case 'MEDIA_PAUSE':      handleMedia(text, 'pause');                             break;
+        case 'MEDIA_RESUME':     handleMedia(text, 'resume');                            break;
+        case 'MEDIA_NEXT':       handleMedia(text, 'next');                              break;
+        case 'MEDIA_PREVIOUS':   handleMedia(text, 'previous');                          break;
+        case 'MEDIA_STOP':       handleMedia(text, 'stop');                              break;
+        case 'MEDIA_VOLUME_UP':  handleMedia(text, 'vol_up');                            break;
+        case 'MEDIA_VOLUME_DOWN':handleMedia(text, 'vol_down');                          break;
+        case 'READ_NOTIFICATIONS':       handleNotifications(text, command.appFilter);       break;
+        case 'READ_LATEST_NOTIFICATION': handleNotifications(text, undefined, 'latest');     break;
+        case 'CHECK_MESSAGES':           handleNotifications(text, undefined, 'messages');   break;
+        case 'CLEAR_NOTIFICATIONS':      handleNotifications(text, undefined, 'clear');      break;
+        case 'DEVICE_INFO':      handleDeviceInfo(text, command.infoType);               break;
+        case 'QUICK_ACTION':     handleQuickAction(text, command.action, command.appName);break;
+        case 'MEMORY_STORE_NAME': handleMemoryStore(text, command.name);                 break;
+        case 'MEMORY_QUERY_NAME': handleMemoryQuery(text);                               break;
+        case 'STUDY_TIMER':      handleStudyTimer(text, command.minutes);                break;
+        case 'STUDY_REMINDERS':  handleStudyReminders(text);                             break;
+        case 'STUDY_CHECKLIST':  handleStudyChecklist(text);                             break;
       }
       return;
     }
 
-    // ── Fallback 1: Intent engine (fuzzy NLU) ────────────────────────────────
-    const intent = classifyIntent(transcript);
+    // ── Fallback 1: Intent engine ────────────────────────────────────────────
+    const intent = classifyIntent(text);
     if (intent && intent.intent !== 'UNKNOWN') {
       switch (intent.intent) {
         case 'SMALL_TALK': {
-          const response = getSmallTalkResponse(transcript);
+          const response = getSmallTalkResponse(text);
           setActivePanel('small_talk');
           setSmallTalkFeedback({ phase: 'response', response });
           speak(response);
           return;
         }
         case 'OPEN_APP': {
-          const appName = intent.entities.app ?? '';
-          const app = findAppByKeyword(appName);
-          if (app) { handleOpenApp(transcript, app); return; }
+          const app = findAppByKeyword(intent.entities.app ?? '');
+          if (app) { handleOpenApp(text, app); return; }
           break;
         }
         case 'CALL_CONTACT': {
           const name = intent.entities.name ?? '';
-          if (name) { handleCallContact(transcript, name); return; }
+          if (name) { handleCallContact(text, name); return; }
           break;
         }
         case 'MEMORY_STORE_NAME': {
           const name = intent.entities.name ?? '';
-          if (name) { handleMemoryStore(transcript, name); return; }
+          if (name) { handleMemoryStore(text, name); return; }
           break;
         }
-        case 'MEMORY_QUERY_NAME': {
-          handleMemoryQuery(transcript);
-          return;
-        }
-        case 'BATTERY': {
-          handleBattery(transcript);
-          return;
-        }
-        case 'DEVICE_INFO': {
-          handleDeviceInfo(transcript, 'all');
-          return;
-        }
+        case 'MEMORY_QUERY_NAME': { handleMemoryQuery(text); return; }
+        case 'BATTERY':           { handleBattery(text); return; }
+        case 'DEVICE_INFO':       { handleDeviceInfo(text, 'all'); return; }
         case 'STUDY_TIMER': {
           const mins = parseInt(intent.entities.minutes ?? '25', 10);
-          handleStudyTimer(transcript, isNaN(mins) ? 25 : mins);
+          handleStudyTimer(text, isNaN(mins) ? 25 : mins);
           return;
         }
-        case 'STUDY_REMINDERS': {
-          handleStudyReminders(transcript);
-          return;
-        }
-        case 'STUDY_CHECKLIST': {
-          handleStudyChecklist(transcript);
-          return;
-        }
-        default:
-          break;
+        case 'STUDY_REMINDERS': { handleStudyReminders(text); return; }
+        case 'STUDY_CHECKLIST': { handleStudyChecklist(text); return; }
+        default: break;
       }
     }
 
     // ── Fallback 2: Rule-based small talk ────────────────────────────────────
-    const st = trySmallTalk(transcript);
+    const st = trySmallTalk(text);
     if (st.matched) {
       setActivePanel('small_talk');
       setSmallTalkFeedback({ phase: 'response', response: st.response });
@@ -367,27 +358,17 @@ export default function VoiceScreen() {
     // ── Fallback 3: Plugin pipeline ──────────────────────────────────────────
     try {
       const s = await getSettings();
-      const pluginCtx = {
-        speak,
-        offlineFirst:   s.offlineFirst ?? true,
-        cloudAIEnabled: s.cloudAIEnabled,
-        language:       s.language,
-      };
-      const handler = PluginManager.findHandler(transcript);
+      const pluginCtx = { speak, offlineFirst: s.offlineFirst ?? true, cloudAIEnabled: s.cloudAIEnabled, language: s.language };
+      const handler = PluginManager.findHandler(text);
       if (handler) {
         setActivePanel('plugin');
         setPluginFeedback({ phase: 'result', pluginName: handler.name });
-        const pluginResult = await PluginManager.execute(transcript, pluginCtx);
+        const pluginResult = await PluginManager.execute(text, pluginCtx);
         if (pluginResult) {
-          setPluginFeedback({
-            phase:      pluginResult.success ? 'result' : 'error',
-            result:     pluginResult,
-            pluginName: handler.name,
-          });
+          setPluginFeedback({ phase: pluginResult.success ? 'result' : 'error', result: pluginResult, pluginName: handler.name });
           speak(pluginResult.response);
           return;
         }
-        // Plugin deferred (e.g. weather → cloud AI)
         setPluginFeedback({ phase: 'none' });
         setActivePanel('none');
       }
@@ -395,10 +376,18 @@ export default function VoiceScreen() {
       logError('VoiceScreen', 'Plugin pipeline error', err);
     }
 
-    // ── Fallback 4: Cloud AI (if enabled) ────────────────────────────────────
-    handleAIQuery(transcript);
+    // ── Fallback 4: Cloud AI ──────────────────────────────────────────────────
+    handleAIQuery(text);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speak]);
 
-    })(); // end async IIFE
+  // Voice result triggers pipeline
+  useEffect(() => {
+    if (voiceState !== 'result' || !transcript) return;
+    if (transcript === lastProcessed.current) return;
+    lastProcessed.current = transcript;
+    resetAllPanels();
+    void processTranscript(transcript);
   }, [voiceState, transcript]);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1066,139 +1055,229 @@ export default function VoiceScreen() {
     '"Hello"  ·  "Who are you?"  ·  "What can you do?"',
   ];
 
-  return (
-    <View
-      style={[
-        styles.container,
-        {
-          backgroundColor: colors.background,
-          paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 0),
-          paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0),
-        },
-      ]}
-    >
-      <StatusBar barStyle="light-content" backgroundColor={colors.background} />
+  // ── Ved-Orb breathing animation ──────────────────────────────────────────────
+  const orbScale = useSharedValue(1);
+  const isListeningVoice = voiceState === 'listening';
+  useEffect(() => {
+    orbScale.value = withRepeat(
+      withSequence(
+        withTiming(isListeningVoice ? 1.25 : 1.1, {
+          duration: isListeningVoice ? 400 : 2000,
+          easing: Easing.inOut(Easing.sin),
+        }),
+        withTiming(1, {
+          duration: isListeningVoice ? 400 : 2000,
+          easing: Easing.inOut(Easing.sin),
+        }),
+      ),
+      -1,
+      false,
+    );
+  }, [isListeningVoice]);
+  const orbAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: orbScale.value }],
+  }));
 
-      {/* ── Header ── */}
-      <View style={styles.header}>
-        <View style={styles.headerTopRow}>
-          <View style={styles.badgeRow}>
-            <View style={[styles.badge, { backgroundColor: 'rgba(124,58,237,0.18)', borderColor: 'rgba(124,58,237,0.35)' }]}>
-              <View style={[styles.badgeDot, { backgroundColor: colors.accent }]} />
-              <Text style={[styles.badgeText, { color: colors.accent }]}>AI ASSISTANT</Text>
+  return (
+    <View style={[styles.root, { backgroundColor: '#090A0F' }]}>
+      <StatusBar barStyle="light-content" backgroundColor="#090A0F" />
+
+      {/* ── Sidebar (overlaid) ── */}
+      <Sidebar
+        isOpen={sidebarOpen}
+        activeNav={activeNav}
+        onNavSelect={(id) => {
+          setActiveNav(id);
+          if (id === 'vault' || id === 'kb') {
+            speak('This feature is coming soon in a future update.');
+          }
+        }}
+        onClose={() => setSidebarOpen(false)}
+        conversationHistory={conversationHistory}
+        onSettings={() => router.push('/settings')}
+        onDiagnostics={() => router.push('/diagnostics')}
+      />
+
+      {/* ── Main Canvas ── */}
+      <View style={[styles.mainCanvas, { paddingTop: insets.top + (Platform.OS === 'web' ? 67 : 0) }]}>
+
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <TouchableOpacity
+              style={styles.toggleBtn}
+              onPress={() => setSidebarOpen(o => !o)}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.toggleIcon}>☰</Text>
+            </TouchableOpacity>
+
+            <View style={styles.vedStatus}>
+              <Animated.View
+                style={[
+                  styles.vedOrb,
+                  isListeningVoice && styles.vedOrbListening,
+                  orbAnimStyle,
+                ]}
+              />
+              <Text style={styles.vedStatusText}>
+                {'Ved Core '}
+                <Text style={{ color: isListeningVoice ? '#E040FB' : '#00F2FE' }}>
+                  {isListeningVoice ? 'Listening...' : 'Active'}
+                </Text>
+              </Text>
             </View>
           </View>
-          <TouchableOpacity
-            onPress={() => router.push('/settings')}
-            hitSlop={12}
-            style={styles.settingsBtn}
-          >
-            <Text style={[styles.settingsIcon, { color: colors.mutedForeground }]}>⚙</Text>
+
+          <TouchableOpacity onPress={() => router.push('/settings')} hitSlop={12}>
+            <Text style={styles.settingsIcon}>⚙</Text>
           </TouchableOpacity>
         </View>
-        <Text style={[styles.appName, { color: colors.foreground }]}>VEDRA</Text>
-        <Text style={[styles.appTagline, { color: colors.mutedForeground }]}>
-          Speak naturally. I'll take care of it.
-        </Text>
-      </View>
 
-      {/* ── Centre: mic + wave ── */}
-      <View style={styles.centre}>
-        <View style={styles.waveContainer}>
-          <ListeningWave isListening={voiceState === 'listening'} />
-        </View>
-        <MicButton state={voiceState} onPress={handleMicPress} />
-        <View style={styles.statusContainer}>
-          <StatusText state={voiceState} />
-        </View>
-      </View>
-
-      {/* ── Bottom: panels ── */}
-      <ScrollView
-        style={styles.bottomScroll}
-        contentContainerStyle={styles.bottomContent}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Always-visible persistent widgets */}
-        <TimerDisplay
-          state={timerManager.state}
-          onCancel={timerManager.cancelActiveTimer}
-          onDismiss={timerManager.dismissCompleted}
-        />
-        <StopwatchDisplay state={stopwatch.state} onAction={stopwatch.dispatch} />
-
-        {/* Live partial transcript */}
-        {showLiveTranscript && (
-          <TranscriptCard transcript={partialTranscript} isSpeaking={false} />
-        )}
-
-        {/* v0.1 panels */}
-        {activePanel === 'open_app' && <CommandFeedback state={appFeedback} />}
-        {activePanel === 'call' && (
-          <CallFeedback state={callFeedback} onContactSelected={handleContactSelected} />
-        )}
-        {activePanel === 'sms' && (
-          <SmsFeedback state={smsFeedback} onContactSelected={handleSmsContactSelected} />
-        )}
-
-        {/* v0.2/v0.3 panels */}
-        {activePanel === 'alarm'    && <AlarmFeedback state={alarmFeedback} />}
-        {activePanel === 'reminder' && <ReminderFeedback state={reminderFeedback} />}
-        {activePanel === 'calendar' && (
-          <CalendarFeedback state={calendarFeedback} onDeleteEvent={doDeleteEvent} />
-        )}
-
-        {/* v0.6 device panel */}
-        {activePanel === 'device' && <DeviceControlFeedback state={deviceFeedback} />}
-
-        {/* v0.7 panels */}
-        {activePanel === 'media'       && <MediaFeedback state={mediaFeedback} />}
-        {activePanel === 'notifications'&& <NotificationFeedback state={notifFeedback} />}
-        {activePanel === 'device_info' && <DeviceInfoFeedback state={devInfoFeedback} />}
-        {activePanel === 'quick_action'&& <QuickActionFeedback state={qaFeedback} />}
-
-        {/* v0.8 panels */}
-        {activePanel === 'memory' && <MemoryFeedback state={memoryFeedback} />}
-        {activePanel === 'study' && (
-          <StudyFeedback state={studyFeedback} onToggleItem={handleToggleStudyItem} />
-        )}
-        {activePanel === 'small_talk' && <SmallTalkFeedback state={smallTalkFeedback} />}
-
-        {/* v1.0 Plugin panel */}
-        {activePanel === 'plugin' && <PluginFeedback state={pluginFeedback} />}
-
-        {/* v0.9 AI panel */}
-        {activePanel === 'ai' && <AIFeedback state={aiFeedback} />}
-
-        {/* v0.9 Conversation history toggle */}
-        {conversationHistory.length > 0 && (
-          <TouchableOpacity
-            onPress={() => setShowHistory(prev => !prev)}
-            style={[styles.historyToggle, { borderColor: colors.border }]}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.historyToggleText, { color: colors.mutedForeground }]}>
-              {showHistory ? 'Hide History' : `Show History (${conversationHistory.length})`}
-            </Text>
-          </TouchableOpacity>
-        )}
-        {showHistory && conversationHistory.length > 0 && (
-          <ConversationHistory
-            turns={conversationHistory}
-            onClear={handleClearHistory}
-          />
-        )}
-
-        {/* Idle hints */}
-        {showHint && (
-          <View style={styles.emptyCard}>
-            <Text style={[styles.hint, { color: colors.mutedForeground }]}>
-              {HINTS.join('\n')}
-            </Text>
+        {/* Content feed — waveform (Step 2) + panels */}
+        <View style={styles.contentFeed}>
+          {/* Waveform hero */}
+          <View style={styles.waveHero} pointerEvents="none">
+            <View style={styles.waveLabel}>
+              <View style={styles.waveDot} />
+              <Text style={styles.waveLabelText}>VEDRA</Text>
+            </View>
+            <HeroWave isListening={voiceState === 'listening'} />
           </View>
-        )}
-      </ScrollView>
+
+          {/* Response panels */}
+          <ScrollView
+            style={styles.panelsScroll}
+            contentContainerStyle={[
+              styles.panelsContent,
+              { paddingBottom: insets.bottom + 100 },
+            ]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <TimerDisplay
+              state={timerManager.state}
+              onCancel={timerManager.cancelActiveTimer}
+              onDismiss={timerManager.dismissCompleted}
+            />
+            <StopwatchDisplay state={stopwatch.state} onAction={stopwatch.dispatch} />
+
+            {showLiveTranscript && (
+              <TranscriptCard transcript={partialTranscript} isSpeaking={false} />
+            )}
+
+            {activePanel === 'open_app' && <CommandFeedback state={appFeedback} />}
+            {activePanel === 'call' && (
+              <CallFeedback state={callFeedback} onContactSelected={handleContactSelected} />
+            )}
+            {activePanel === 'sms' && (
+              <SmsFeedback state={smsFeedback} onContactSelected={handleSmsContactSelected} />
+            )}
+            {activePanel === 'alarm'    && <AlarmFeedback state={alarmFeedback} />}
+            {activePanel === 'reminder' && <ReminderFeedback state={reminderFeedback} />}
+            {activePanel === 'calendar' && (
+              <CalendarFeedback state={calendarFeedback} onDeleteEvent={doDeleteEvent} />
+            )}
+            {activePanel === 'device' && <DeviceControlFeedback state={deviceFeedback} />}
+            {activePanel === 'media'        && <MediaFeedback state={mediaFeedback} />}
+            {activePanel === 'notifications'&& <NotificationFeedback state={notifFeedback} />}
+            {activePanel === 'device_info'  && <DeviceInfoFeedback state={devInfoFeedback} />}
+            {activePanel === 'quick_action' && <QuickActionFeedback state={qaFeedback} />}
+            {activePanel === 'memory' && <MemoryFeedback state={memoryFeedback} />}
+            {activePanel === 'study' && (
+              <StudyFeedback state={studyFeedback} onToggleItem={handleToggleStudyItem} />
+            )}
+            {activePanel === 'small_talk' && <SmallTalkFeedback state={smallTalkFeedback} />}
+            {activePanel === 'plugin' && <PluginFeedback state={pluginFeedback} />}
+            {activePanel === 'ai'     && <AIFeedback state={aiFeedback} />}
+
+            {conversationHistory.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setShowHistory(prev => !prev)}
+                style={[styles.historyToggle, { borderColor: 'rgba(255,255,255,0.1)' }]}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.historyToggleText}>
+                  {showHistory ? 'Hide History' : `Show History (${conversationHistory.length})`}
+                </Text>
+              </TouchableOpacity>
+            )}
+            {showHistory && conversationHistory.length > 0 && (
+              <ConversationHistory turns={conversationHistory} onClear={handleClearHistory} />
+            )}
+
+            {showHint && (
+              <View style={styles.emptyCard}>
+                <Text style={styles.hintHeading}>Try saying or typing…</Text>
+                {HINTS.map((h, i) => (
+                  <View key={i} style={styles.hintChip}>
+                    <Text style={styles.hintChipText}>{h}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </ScrollView>
+        </View>
+
+        {/* ── Glass command dock ── */}
+        <View style={[styles.dockOuter, { paddingBottom: insets.bottom + 12 }]}>
+          <View style={styles.dock}>
+            {/* + button */}
+            <TouchableOpacity style={styles.dockIconBtn} activeOpacity={0.7}>
+              <Text style={styles.dockIconText}>+</Text>
+            </TouchableOpacity>
+
+            {/* Text input */}
+            <TextInput
+              style={styles.dockInput}
+              value={dockText}
+              onChangeText={setDockText}
+              placeholder={voiceState === 'listening' ? 'Listening to your voice…' : 'Ask Ved anything (or tap mic for voice)…'}
+              placeholderTextColor="rgba(255,255,255,0.28)"
+              returnKeyType="send"
+              onSubmitEditing={() => {
+                const t = dockText.trim();
+                if (!t) return;
+                setDockText('');
+                Keyboard.dismiss();
+                resetAllPanels();
+                lastProcessed.current = '';
+                void processTranscript(t);
+              }}
+            />
+
+            {/* Mic icon button */}
+            <TouchableOpacity
+              style={[styles.dockIconBtn, voiceState === 'listening' && styles.dockMicActive]}
+              onPress={handleMicPress}
+              activeOpacity={0.75}
+            >
+              <Feather
+                name="mic"
+                size={20}
+                color={voiceState === 'listening' ? '#E040FB' : 'rgba(255,255,255,0.5)'}
+              />
+            </TouchableOpacity>
+
+            {/* Send button */}
+            <TouchableOpacity
+              style={styles.dockSendBtn}
+              activeOpacity={0.8}
+              onPress={() => {
+                const t = dockText.trim();
+                if (!t) return;
+                setDockText('');
+                Keyboard.dismiss();
+                resetAllPanels();
+                lastProcessed.current = '';
+                void processTranscript(t);
+              }}
+            >
+              <Text style={styles.dockSendText}>→</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
     </View>
   );
 }
@@ -1208,46 +1287,149 @@ export default function VoiceScreen() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 24 },
+  root: { flex: 1 },
 
-  header: { alignItems: 'center', paddingTop: 20, gap: 8 },
-  headerTopRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    width: '100%', position: 'relative',
+  mainCanvas: { flex: 1, flexDirection: 'column' },
+
+  // ── Header ──
+  header: {
+    height: 70,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
   },
-  badgeRow: { marginBottom: 4 },
-  badge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 12, paddingVertical: 5,
-    borderRadius: 20, borderWidth: 1,
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+
+  toggleBtn: {
+    width: 36, height: 36, borderRadius: 8,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center', justifyContent: 'center',
   },
-  badgeDot: { width: 6, height: 6, borderRadius: 3 },
-  badgeText: { fontSize: 10, fontFamily: 'Inter_600SemiBold', letterSpacing: 1.5 },
-  appName: { fontSize: 34, fontFamily: 'Inter_700Bold', letterSpacing: 8 },
-  appTagline: { fontSize: 13, fontFamily: 'Inter_400Regular', textAlign: 'center' },
-  settingsBtn: { position: 'absolute', right: 0, top: 0, padding: 4 },
-  settingsIcon: { fontSize: 22 },
+  toggleIcon: { fontSize: 17, color: '#FFFFFF' },
 
-  centre: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 260 },
-  waveContainer: { position: 'absolute', width: '100%', alignItems: 'center' },
-  statusContainer: { marginTop: 24 },
+  vedStatus: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  vedOrb: {
+    width: 24, height: 24, borderRadius: 12,
+    backgroundColor: '#00F2FE',
+    shadowColor: '#00F2FE',
+    shadowRadius: 10, shadowOpacity: 0.8,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  vedOrbListening: { backgroundColor: '#E040FB', shadowColor: '#E040FB' },
+  vedStatusText: {
+    fontSize: 13,
+    fontFamily: 'Inter_400Regular',
+    color: 'rgba(255,255,255,0.65)',
+  },
+  settingsIcon: { fontSize: 22, color: 'rgba(255,255,255,0.5)' },
 
-  bottomScroll: { flex: 0 },
-  bottomContent: { paddingBottom: 24, gap: 0 },
+  // ── Content feed ──
+  contentFeed: { flex: 1, position: 'relative' },
+
+  waveHero: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 40,
+    paddingBottom: 16,
+    gap: 24,
+  },
+  waveLabel: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  waveDot: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: '#E040FB',
+    shadowColor: '#E040FB', shadowRadius: 6,
+    shadowOpacity: 0.9, shadowOffset: { width: 0, height: 0 },
+  },
+  waveLabelText: {
+    fontSize: 22, fontFamily: 'Inter_700Bold',
+    letterSpacing: 4, color: '#FFFFFF',
+  },
+
+  panelsScroll: { flex: 1 },
+  panelsContent: { paddingHorizontal: 16, paddingTop: 8, gap: 0 },
 
   historyToggle: {
     alignSelf: 'center', marginTop: 12,
     paddingHorizontal: 16, paddingVertical: 8,
     borderRadius: 20, borderWidth: 1,
   },
-  historyToggleText: { fontSize: 12, fontFamily: 'Inter_500Medium' },
-
-  emptyCard: {
-    width: '100%', borderRadius: 16,
-    paddingVertical: 20, paddingHorizontal: 4,
+  historyToggleText: {
+    fontSize: 12, fontFamily: 'Inter_500Medium',
+    color: 'rgba(255,255,255,0.45)',
   },
-  hint: {
-    fontSize: 13, fontFamily: 'Inter_400Regular',
-    textAlign: 'center', lineHeight: 24,
+  emptyCard: { width: '100%', paddingVertical: 8, paddingHorizontal: 4, gap: 6 },
+  hintHeading: {
+    fontSize: 11, fontFamily: 'Inter_600SemiBold',
+    letterSpacing: 1.2, textAlign: 'center',
+    color: 'rgba(255,255,255,0.25)',
+    marginBottom: 4, textTransform: 'uppercase',
+  },
+  hintChip: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 20, paddingVertical: 6, paddingHorizontal: 14,
+  },
+  hintChipText: {
+    fontSize: 12, fontFamily: 'Inter_400Regular',
+    textAlign: 'center', color: 'rgba(255,255,255,0.32)',
+    lineHeight: 18,
+  },
+
+  // ── Glass command dock ──
+  dockOuter: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
+  dock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 62,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.09)',
+    paddingHorizontal: 8,
+    gap: 6,
+  },
+  dockIconBtn: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+  },
+  dockMicActive: {
+    backgroundColor: 'rgba(224,64,251,0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(224,64,251,0.4)',
+  },
+  dockIconText: {
+    fontSize: 22,
+    color: 'rgba(255,255,255,0.45)',
+    lineHeight: 28,
+  },
+  dockInput: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontFamily: 'Inter_400Regular',
+    height: '100%',
+  },
+  dockSendBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#00F2FE',
+  },
+  dockSendText: {
+    fontSize: 18,
+    color: '#000',
+    fontFamily: 'Inter_700Bold',
   },
 });

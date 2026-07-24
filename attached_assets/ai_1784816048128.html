@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VEDRA - Personal AI Assistant UI</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-void: #090A0F;
+            --glass-surface: rgba(255, 255, 255, 0.04);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            
+            --primary-glow: #00F2FE;
+            --secondary-glow: #4FACFE;
+            --accent-listening: #E040FB;
+            
+            --text-primary: #FFFFFF;
+            --text-secondary: rgba(255, 255, 255, 0.7);
+            --text-muted: rgba(255, 255, 255, 0.4);
+
+            --font-main: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --sidebar-width: 260px;
+            --header-height: 70px;
+            --dock-height: 70px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            outline: none;
+        }
+
+        body {
+            background-color: var(--bg-void);
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* SIDEBAR (WITH HIDE / COLLAPSE ANIMATION) */
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100%;
+            border-right: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            z-index: 10;
+            transition: transform 0.3s ease, margin-left 0.3s ease;
+        }
+
+        .sidebar.hidden {
+            margin-left: calc(var(--sidebar-width) * -1);
+        }
+
+        .brand {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 40px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            letter-spacing: 1px;
+        }
+
+        .brand::before {
+            content: '';
+            width: 12px;
+            height: 12px;
+            background: linear-gradient(135deg, var(--primary-glow), var(--secondary-glow));
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .nav-section { margin-bottom: 30px; }
+
+        .nav-header {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+            margin-bottom: 15px;
+            padding-left: 10px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px;
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .nav-item:hover {
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: rgba(79, 172, 254, 0.1);
+            color: var(--primary-glow);
+            font-weight: 600;
+        }
+
+        .sidebar-footer { margin-top: auto; }
+
+        .upgrade-card {
+            background: linear-gradient(135deg, rgba(0, 242, 254, 0.1), rgba(79, 172, 254, 0.1));
+            border: 1px solid rgba(0, 242, 254, 0.2);
+            padding: 15px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .upgrade-card h4 { font-size: 14px; margin-bottom: 5px; }
+        .upgrade-card p { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
+
+        /* MAIN CANVAS WORKSPACE */
+        .main-canvas {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            height: 100%;
+        }
+
+        .header {
+            height: var(--header-height);
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .toggle-btn {
+            background: none;
+            border: 1px solid var(--glass-border);
+            color: var(--text-primary);
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            transition: background 0.2s;
+        }
+
+        .toggle-btn:hover {
+            background: var(--glass-surface);
+            border-color: var(--primary-glow);
+        }
+
+        .ved-core-status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .ved-orb {
+            width: 24px;
+            height: 24px;
+            background: radial-gradient(circle at center, #ffffff 0%, var(--primary-glow) 40%, var(--secondary-glow) 100%);
+            border-radius: 50%;
+            box-shadow: 0 0 15px rgba(0, 242, 254, 0.6);
+            animation: orb-breathe 4s infinite ease-in-out;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .ved-orb.listening {
+            background: radial-gradient(circle at center, #ffffff 0%, #E040FB 40%, #00F2FE 100%);
+            box-shadow: 0 0 20px rgba(224, 64, 251, 0.8);
+            animation: orb-pulse-listening 0.8s infinite alternate ease-in-out;
+        }
+
+        @keyframes orb-breathe {
+            0%, 100% { transform: scale(1); opacity: 0.9; }
+            50% { transform: scale(1.1); opacity: 1; }
+        }
+
+        @keyframes orb-pulse-listening {
+            0% { transform: scale(1); }
+            100% { transform: scale(1.25); }
+        }
+
+        .content-feed {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .wave-display-container {
+            width: 100%;
+            max-width: 900px;
+            height: 320px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        #heroWaveCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* BRAND NAME TITLE ABOVE WAVE */
+        .wave-label {
+            position: absolute;
+            top: 20px;
+            font-size: 22px;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            color: #FFFFFF;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+        }
+
+        .wave-label .dot {
+            width: 8px;
+            height: 8px;
+            background-color: #E040FB;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #E040FB;
+            animation: blink 1.2s infinite alternate;
+        }
+
+        @keyframes blink {
+            from { opacity: 0.3; }
+            to { opacity: 1; }
+        }
+
+        .dock-container {
+            position: absolute;
+            bottom: 30px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: center;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        .glass-panel {
+            background: var(--glass-surface);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+        }
+
+        .command-dock {
+            width: 100%;
+            max-width: 700px;
+            height: var(--dock-height);
+            padding: 0 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            pointer-events: auto;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }
+
+        .dock-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 22px;
+            cursor: pointer;
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 10px;
+            transition: all 0.2s;
+        }
+
+        .mic-btn.listening {
+            color: #E040FB;
+            background: rgba(224, 64, 251, 0.15);
+            border: 1px solid rgba(224, 64, 251, 0.4);
+            box-shadow: 0 0 15px rgba(224, 64, 251, 0.4);
+            animation: pulse-btn 1.2s infinite;
+        }
+
+        @keyframes pulse-btn {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.08); }
+            100% { transform: scale(1); }
+        }
+
+        .main-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            font-size: 15px;
+            height: 100%;
+        }
+
+        .send-btn {
+            background: linear-gradient(135deg, var(--primary-glow), var(--secondary-glow));
+            color: #000;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">VEDRA</div>
+
+        <nav class="nav-section">
+            <div class="nav-header">Workspace</div>
+            <div class="nav-item active"><span>✨</span> Ask Ved</div>
+            <div class="nav-item"><span>📁</span> Quick Vault</div>
+            <div class="nav-item"><span>🧠</span> Knowledge Base</div>
+        </nav>
+
+        <nav class="nav-section">
+            <div class="nav-header">Recent History</div>
+            <div class="nav-item"><span>💬</span> UI Design Blueprint</div>
+            <div class="nav-item"><span>💻</span> Python API Debug</div>
+            <div class="nav-item"><span>📝</span> Meeting Summary</div>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="upgrade-card">
+                <h4>Vedra Pro</h4>
+                <p>Unlock GPT-5 & local file analysis.</p>
+                <button class="nav-item active" style="width: 100%; justify-content: center; border: none;">Upgrade</button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- MAIN CANVAS WORKSPACE -->
+    <main class="main-canvas">
+        <header class="header">
+            <div class="header-left">
+                <!-- SIDEBAR TOGGLE BUTTON -->
+                <button class="toggle-btn" id="toggleBtn" title="Toggle Sidebar">☰</button>
+                <div class="ved-core-status">
+                    <div class="ved-orb" id="statusOrb"></div>
+                    <span>Ved Core <span id="statusText" style="color: var(--primary-glow);">Active</span></span>
+                </div>
+            </div>
+        </header>
+
+        <div class="content-feed">
+            <div class="wave-display-container">
+                <div class="wave-label">
+                    <div class="dot"></div>
+                    <span id="waveLabelText">VEDRA</span>
+                </div>
+                <canvas id="heroWaveCanvas"></canvas>
+            </div>
+        </div>
+
+        <div class="dock-container">
+            <div class="glass-panel command-dock">
+                <button class="dock-btn">+</button>
+                <input type="text" class="main-input" id="mainInput" placeholder="Ask Ved anything (or click mic for voice input)...">
+                
+                <button class="dock-btn mic-btn" id="micBtn" title="Click to test live voice input">
+                    <svg style="width:20px;height:20px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                </button>
+                
+                <button class="dock-btn send-btn">→</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Sidebar Toggle Handler
+        const sidebar = document.getElementById('sidebar');
+        const toggleBtn = document.getElementById('toggleBtn');
+
+        toggleBtn.addEventListener('click', () => {
+            sidebar.classList.toggle('hidden');
+            setTimeout(resizeCanvas, 300);
+        });
+
+        // Waveform Visualizer
+        const canvas = document.getElementById('heroWaveCanvas');
+        const ctx = canvas.getContext('2d');
+        const micBtn = document.getElementById('micBtn');
+        const statusOrb = document.getElementById('statusOrb');
+        const statusText = document.getElementById('statusText');
+        const mainInput = document.getElementById('mainInput');
+
+        let audioCtx, analyser, microphone, dataArray;
+        let isListening = false;
+        let time = 0;
+
+        function resizeCanvas() {
+            canvas.width = canvas.parentElement.clientWidth;
+            canvas.height = canvas.parentElement.clientHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function renderWaveform() {
+            requestAnimationFrame(renderWaveform);
+            time += 0.04;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const width = canvas.width;
+            const height = canvas.height;
+            const centerY = height / 2;
+            const totalLines = 140; 
+            const lineSpacing = width / totalLines;
+
+            if (isListening && analyser) {
+                analyser.getByteFrequencyData(dataArray);
+            }
+
+            for (let i = 0; i < totalLines; i++) {
+                const x = i * lineSpacing + lineSpacing / 2;
+                const normalizedX = (i / totalLines) * 2 - 1;
+                const envelope = Math.exp(-Math.pow(normalizedX * 2.2, 2));
+
+                let amplitude = 0;
+
+                if (isListening && dataArray) {
+                    const freqIdx = Math.floor((i / totalLines) * (dataArray.length / 2));
+                    amplitude = (dataArray[freqIdx] / 255) * (height * 0.45) * envelope;
+                } else {
+                    const wave1 = Math.sin(time * 2 + i * 0.15);
+                    const wave2 = Math.cos(time * 1.5 + i * 0.25);
+                    amplitude = (Math.abs(wave1 * wave2) * 50 + 6) * envelope;
+                }
+
+                amplitude = Math.max(amplitude, 3 * envelope);
+
+                const progress = i / totalLines;
+                let color;
+                if (progress < 0.5) {
+                    color = `rgb(${Math.floor(224 - progress * 200)}, ${Math.floor(64 + progress * 100)}, 251)`;
+                } else {
+                    color = `rgb(${Math.floor(124 - (progress - 0.5) * 200)}, ${Math.floor(114 + (progress - 0.5) * 200)}, 254)`;
+                }
+
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2.2;
+                ctx.lineCap = 'round';
+
+                ctx.beginPath();
+                ctx.moveTo(x, centerY - amplitude);
+                ctx.lineTo(x, centerY + amplitude);
+                ctx.stroke();
+            }
+        }
+
+        renderWaveform();
+
+        micBtn.addEventListener('click', async () => {
+            if (!isListening) {
+                await startListening();
+            } else {
+                stopListening();
+            }
+        });
+
+        async function startListening() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioCtx.createAnalyser();
+                microphone = audioCtx.createMediaStreamSource(stream);
+                
+                analyser.fftSize = 512;
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                microphone.connect(analyser);
+
+                isListening = true;
+                micBtn.classList.add('listening');
+                statusOrb.classList.add('listening');
+                statusText.innerHTML = '<span style="color: #E040FB;">Listening...</span>';
+                mainInput.placeholder = "Listening to your voice...";
+            } catch (err) {
+                console.warn('Microphone access blocked/unavailable:', err);
+                isListening = true;
+                micBtn.classList.add('listening');
+                statusOrb.classList.add('listening');
+                statusText.innerHTML = '<span style="color: #E040FB;">Listening (Active)</span>';
+            }
+        }
+
+        function stopListening() {
+            isListening = false;
+            micBtn.classList.remove('listening');
+            statusOrb.classList.remove('listening');
+            statusText.innerHTML = '<span style="color: var(--primary-glow);">Active</span>';
+            mainInput.placeholder = "Ask Ved anything (or click mic for voice input)...";
+
+            if (microphone && microphone.mediaStream) {
+                microphone.mediaStream.getTracks().forEach(track => track.stop());
+            }
+            if (audioCtx) audioCtx.close();
+        }
+    </script>
+</body>
+</html>
