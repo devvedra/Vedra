@@ -19,7 +19,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import {
   getSettings, updateSettings, getApiKey, setApiKey, clearApiKey,
   invalidateSettingsCache,
-  type AIProviderID, type VedraSettings, type ThemeMode,
+  type AIProviderID, type VedraSettings, type ThemeMode, type ToneStrategy,
 } from '@/utils/settingsStore';
 import {
   getStorageSummary, clearHistory, clearMemory, clearAllData, exportData,
@@ -289,6 +289,24 @@ export default function SettingsScreen() {
     { id: 'zh-CN', label: 'Chinese'      },
   ];
 
+  const TONE_OPTIONS: Array<{ id: ToneStrategy; label: string; sublabel: string }> = [
+    {
+      id: 'hinglish-mentor',
+      label: '🎙️ Hinglish Mentor',
+      sublabel: 'Energetic Hinglish • 1.05× speed • Best for study & complex topics',
+    },
+    {
+      id: 'focused-academic',
+      label: '🎓 Focused Academic',
+      sublabel: 'Calm Indian English • 0.95× speed • Best for revision & formulas',
+    },
+    {
+      id: 'local-companion',
+      label: '🤝 Local Companion',
+      sublabel: 'Casual Hindi • Natural pace • Best for planning & casual chats',
+    },
+  ];
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header */}
@@ -420,6 +438,42 @@ export default function SettingsScreen() {
           })}
         </Section>
 
+        {/* ── Tone Strategy ─────────────────────────────────────────────────── */}
+        <Section title="Tone Strategy">
+          <Text style={[styles.keyNote, { color: colors.mutedForeground }]}>
+            Controls Vedra's language mix, pacing, and AI personality.
+          </Text>
+          {TONE_OPTIONS.map(opt => {
+            const active = (settings.toneStrategy ?? 'hinglish-mentor') === opt.id;
+            return (
+              <TouchableOpacity
+                key={opt.id}
+                onPress={() => patch({ toneStrategy: opt.id })}
+                activeOpacity={0.7}
+                style={[
+                  styles.toneRow,
+                  {
+                    borderBottomColor: colors.border,
+                    backgroundColor: active ? (colors.primary + '18') : 'transparent',
+                  },
+                ]}
+              >
+                <View style={styles.toneTextBlock}>
+                  <Text style={[styles.rowLabel, { color: active ? colors.primary : colors.foreground }]}>
+                    {opt.label}
+                  </Text>
+                  <Text style={[styles.rowSub, { color: colors.mutedForeground }]}>
+                    {opt.sublabel}
+                  </Text>
+                </View>
+                {active && (
+                  <Text style={[styles.toneCheck, { color: colors.primary }]}>✓</Text>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </Section>
+
         {/* ── Voice ────────────────────────────────────────────────────────── */}
         <Section title="Voice">
           {/* Language */}
@@ -451,7 +505,7 @@ export default function SettingsScreen() {
           {/* Speed slider */}
           <SliderRow
             label="Speech Speed"
-            sublabel="How fast Vedra speaks"
+            sublabel="Override tone default (blank = tone default)"
             value={settings.voiceSpeed}
             min={0.5} max={2.0} step={0.1}
             onValue={handleSpeedChange}
@@ -461,7 +515,7 @@ export default function SettingsScreen() {
           {/* Pitch slider */}
           <SliderRow
             label="Speech Pitch"
-            sublabel="Tone of Vedra's voice"
+            sublabel="Override tone default (blank = tone default)"
             value={settings.voicePitch}
             min={0.5} max={2.0} step={0.1}
             onValue={handlePitchChange}
@@ -651,6 +705,14 @@ const styles = StyleSheet.create({
   chipTextSm: { fontSize: 11 },
 
   langScroll: { flex: 1 },
+
+  toneRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  toneTextBlock: { flex: 1, marginRight: 12 },
+  toneCheck: { fontSize: 18, fontFamily: 'Inter_700Bold' },
 
   sliderRow: {
     paddingHorizontal: 16, paddingVertical: 14,

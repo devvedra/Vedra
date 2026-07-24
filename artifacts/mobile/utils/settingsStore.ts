@@ -10,8 +10,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AIProviderID = 'openai' | 'gemini';
-export type ThemeMode    = 'dark' | 'light' | 'system';
+export type AIProviderID  = 'openai' | 'gemini';
+export type ThemeMode     = 'dark' | 'light' | 'system';
+export type ToneStrategy  = 'hinglish-mentor' | 'focused-academic' | 'local-companion';
 
 export interface VedraSettings {
   // Cloud AI
@@ -23,6 +24,8 @@ export interface VedraSettings {
   language:                string;
   voiceSpeed:              number;   // 0.5–2.0
   voicePitch:              number;   // 0.5–2.0
+  // Tone strategy
+  toneStrategy:            ToneStrategy;
   // Wake phrase (future)
   wakePhraseEnabled:       boolean;
   wakePhrase:              string;
@@ -41,6 +44,7 @@ const DEFAULTS: VedraSettings = {
   language:                'en-US',
   voiceSpeed:              1.0,
   voicePitch:              1.0,
+  toneStrategy:            'hinglish-mentor',
   wakePhraseEnabled:       false,
   wakePhrase:              'Hey Vedra',
   saveConversationHistory: true,

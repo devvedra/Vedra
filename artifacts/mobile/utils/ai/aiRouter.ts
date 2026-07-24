@@ -11,7 +11,7 @@
  * Never call this for commands already handled offline.
  */
 
-import { getSettings, getApiKey } from '../settingsStore';
+import { getSettings, getApiKey, type ToneStrategy } from '../settingsStore';
 import { OpenAIProvider }  from './providers/openaiProvider';
 import { GeminiProvider }  from './providers/geminiProvider';
 import { type AIProvider, type AIMessage, type AIResponse, errorResponse } from './aiProvider';
@@ -32,13 +32,31 @@ export function listProviders(): AIProvider[] {
   return Object.values(PROVIDERS);
 }
 
-// ─── System prompt ────────────────────────────────────────────────────────────
+// ─── Tone strategy system prompts ─────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are Vedra, an intelligent Android AI assistant.
-You answer questions clearly and helpfully.
+const TONE_PROMPTS: Record<ToneStrategy, string> = {
+  'hinglish-mentor': `You are Vedra, ek smart aur friendly Android AI assistant.
+Respond in natural Hinglish — a warm mix of Hindi and English (roughly 70% Hinglish, 30% English) like an approachable mentor would speak.
+Keep explanations crisp and energetic. Use simple everyday analogies. Maintain a motivating, warm vibe.
 When the user asks about device features (calls, flashlight, alarms, etc.), remind them those work offline with a voice command.
-Keep responses concise — under 150 words unless the user explicitly asks for detail.
-Never make up facts. If unsure, say so honestly.`;
+Keep responses under 150 words unless the user explicitly asks for detail. Kabhi bhi facts mat banao — agar pata nahi, honestly bolo.`,
+
+  'focused-academic': `You are Vedra, an intelligent Android AI assistant.
+Respond in calm, precise Indian English. Occasional Hindi grounding words are fine (e.g., "Bilkul", "Samjhe?") but keep the delivery structured and reassuring.
+Emphasise key terms clearly. Avoid filler or fluff. Structure answers with logical flow.
+When the user asks about device features (calls, flashlight, alarms, etc.), remind them those work offline with a voice command.
+Keep responses under 150 words unless the user explicitly asks for detail. Never make up facts. If unsure, say so honestly.`,
+
+  'local-companion': `Aap Vedra hain, ek reliable aur dost jaisi Android AI assistant.
+Casual Hindi mein jawab dijiye — warm, relaxed, aur bilkul local andaaz mein, jaise ek achi dost baat kar rahi ho.
+Tone soft aur empathetic rakho. Har baat seedhi aur dil se bolni chahiye.
+Agar user device features ke baare mein poochhe (calls, flashlight, alarms, etc.), toh unhe batao ki ye sab offline bhi kaam karte hain.
+Jawab 150 words se chhota rakho jab tak user detail na maange. Koi bhi baat jhooth ya andaaze se mat bolna — agar pata nahi, seedha bolo.`,
+};
+
+function getSystemPrompt(tone: ToneStrategy): string {
+  return TONE_PROMPTS[tone] ?? TONE_PROMPTS['hinglish-mentor'];
+}
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
@@ -93,7 +111,7 @@ export async function routeToAI(
   // ── Build message history for context ─────────────────────────────────────
   const history = await getAIHistory(maxHistory);
   const messages: AIMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: getSystemPrompt(settings.toneStrategy ?? 'hinglish-mentor') },
     ...history,
     { role: 'user', content: transcript },
   ];

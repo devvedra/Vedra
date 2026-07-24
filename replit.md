@@ -1,50 +1,64 @@
-# Vedra — Offline-First Android AI Assistant
+# Vedra
 
-## Overview
+Offline-first Android AI assistant built with Expo + React Native.
 
-Vedra is an offline-first Android AI assistant built with Expo + React Native. All device commands execute locally — no internet required. Cloud AI (OpenAI/Gemini) is an optional fallback, never a requirement.
+## Project Structure
+
+```
+artifacts/mobile/     — Expo mobile app (main product)
+artifacts/api-server/ — Lightweight Express API server
+```
+
+This is a pnpm monorepo. Always use `pnpm` to install packages.
+
+## Running the project
+
+```bash
+# Install all dependencies
+pnpm install
+
+# Start Expo dev server (web preview + QR code for Expo Go)
+pnpm --filter @workspace/mobile run dev
+
+# Start API server
+pnpm --filter @workspace/api-server run dev
+```
+
+The Expo workflow starts automatically. Voice recognition only works in a native Android APK build — the web preview shows all UI panels with mock input.
+
+## Building an Android APK
+
+```bash
+# Requires EAS CLI and an Expo account
+eas build --platform android --profile preview
+```
+
+EAS project ID: `ac6482ca-4361-4255-99af-bd1146f1e27b`
 
 ## Architecture
 
-- **Stack**: Expo SDK 54 / React Native 0.81 / TypeScript / Expo Router / TanStack Query
-- **Monorepo**: pnpm workspace with `artifacts/mobile` (Expo app), `artifacts/api-server` (Express), `artifacts/mockup-sandbox`
-- **Routing**: Single voice screen at `/`, settings at `/settings`, diagnostics at `/diagnostics`
+See `artifacts/mobile/ARCHITECTURE.md` for the full intent routing pipeline, plugin system, theme system, and storage schema.
 
-## Key Files
+Key layers (in order):
+1. **commandParser** — fast keyword matching
+2. **intentEngine** — fuzzy NLU
+3. **smallTalk** — rule-based conversational responses
+4. **PluginManager** — plugin pipeline
+5. **routeToAI** — cloud AI (OpenAI or Gemini, opt-in)
 
-| Path | Purpose |
-|------|---------|
-| `artifacts/mobile/app/index.tsx` | Main voice screen — all panels, 4-layer intent pipeline |
-| `artifacts/mobile/app/settings.tsx` | Full settings (theme, voice, AI, backup, privacy) |
-| `artifacts/mobile/app/diagnostics.tsx` | System health check screen |
-| `artifacts/mobile/utils/plugins/` | Plugin architecture (types, manager, built-in plugins) |
-| `artifacts/mobile/utils/errorLogger.ts` | Local error log (never uploaded) |
-| `artifacts/mobile/utils/backupManager.ts` | Local JSON backup/restore |
-| `artifacts/mobile/utils/settingsStore.ts` | Settings persistence (theme, offlineFirst, voice, AI) |
-| `artifacts/mobile/contexts/ThemeContext.tsx` | Dark/light/system theme provider |
-| `artifacts/mobile/ARCHITECTURE.md` | Full architecture documentation |
-| `artifacts/mobile/PLUGIN_GUIDE.md` | Plugin development guide |
+## Tone Strategy
 
-## Intent Pipeline (4 layers)
+Three AI personality modes selectable in Settings → Tone Strategy:
 
-1. `commandParser.ts` — fast keyword matching
-2. `intentEngine.ts` — fuzzy NLU
-3. `smallTalk.ts` — rule-based conversation
-4. `PluginManager` — plugin pipeline (Calculator, Notes, Weather)
-5. `routeToAI()` — cloud AI fallback (OpenAI / Gemini)
+| Mode | Language | Speed | Best for |
+|------|----------|-------|----------|
+| Hinglish Mentor | 70% Hinglish / 30% English | 1.05× | Study & complex topics |
+| Focused Academic | Indian English + Hindi grounding | 0.95× | Revision & formulas |
+| Local Companion | Casual Hindi | 1.00× | Planning & casual chats |
 
-## Running the App
-
-```bash
-pnpm install
-pnpm --filter @workspace/mobile run dev   # Expo dev server (web preview)
-```
-
-Full voice recognition requires a native Android APK build via EAS CLI.
+Each tone drives both the AI system prompt (`utils/ai/aiRouter.ts`) and TTS rate/pitch (`hooks/useTextToSpeech.ts`).
 
 ## User Preferences
 
-- Extend the existing codebase without breaking previous functionality
-- Preserve all v0.1–v0.9 features
-- Offline-first: cloud AI is optional, never required
-- Plugin architecture: new features as plugins, not core changes
+- Keep existing project structure and stack.
+- Do not migrate to a different database or restructure the monorepo without explicit request.
